@@ -58,6 +58,36 @@ plot:
   stats_loc: lower center  # stats box inside panel: lower left | lower center | lower right
   ncols: 2                 # panel layout (channels per row)
   figsize: [11, 8]
+  # Model BT (x) vs observed BT (y), coloured by point density on a log colour scale.
+  # Rows = experiments, columns = channels; same QC selection as the histograms.
+  scatter:
+    enabled: true
+    channels: [8, 9, 10, 13]   # independent of the top-level `channels`
+    bin_width: 1.0             # K, density bin size on both axes
+    range: null                # null -> auto (0.1-99.9 percentile, per channel)
+                               # [180, 320] -> same for every channel
+                               # {8: [200, 260], 13: [180, 310]} -> per channel
+    normalize: false           # false -> count per bin; true -> fraction of points in the panel
+    cmap: viridis
+    # vmin: 1                  # optional fixed colour-scale limits
+    # vmax: 1.0e4
+    # figsize: [15, 7.6]       # default: 3.6 per channel x 3.4 per experiment
+  # Boxplots in the style of Okamoto (2017, QJRMS 143:1517, Fig. 11), one row per channel:
+  #   left: observed BT + model BT of each experiment; right: O-B of each experiment.
+  #   box = Q1-Q3, whiskers = whis x IQR, dots = outliers, line = median, x = mean
+  boxplot:
+    enabled: true
+    channels: [8, 9, 10, 13]
+    apply_qc: true             # false -> all valid obs before QC (as in Okamoto Fig. 11)
+    obs: auto                  # auto -> one OB box if every experiment has identical obs,
+                               #         otherwise one OB box per experiment
+                               # shared | per_experiment -> force either
+    whis: 1.5
+    show_outliers: true
+    show_stats: true           # mean / SD under each box label
+    # bt_ylim: [180, 310]      # optional y ranges
+    # omb_ylim: [-100, 100]
+    # figsize: [12, 16]
 
 # ---------------------------------------------------------------------------
 # Output
