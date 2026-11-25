@@ -29,7 +29,7 @@ import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
 
 GROUP_VAR = "brightnessTemperature"
 FILL_THRESH = 1.0e30   # float fill is -3.368795e+38
@@ -244,20 +244,40 @@ def scatter_range(scfg, ch, all_data, exps):
     return 5.0 * np.floor(lo / 5.0), 5.0 * np.ceil(hi / 5.0)
 
 
+# Discrete jet-like palette after Okamoto (2017, QJRMS 143:1517, Figs 2-3):
+# dark navy -> blue -> light blue -> cyan -> green -> yellow -> orange -> red -> dark red
+OKAMOTO_COLORS = [
+    "#1b1d5e", "#262f86", "#2e45a8", "#3560c4", "#3d7ad6", "#4b94df",
+    "#5aaee0", "#6cc5d4", "#86d2a6", "#a8d86c", "#cbdc3c", "#ecd82a",
+    "#f6ad25", "#f07b20", "#e2441c", "#b51d1d", "#7a1010",
+]
+
+
+def scatter_cmap(name):
+    if name in (None, "okamoto"):
+        return LinearSegmentedColormap.from_list("okamoto", OKAMOTO_COLORS)
+    return plt.get_cmap(name)
+
+
 def plot_scatter(all_data, exps, cfg, ncycles):
-    """Model BT (x) vs observed BT (y) as a 2-D histogram coloured by point density
-    (log colour scale). Rows = experiments, columns = channels; one colour scale
-    shared by all panels so the experiments can be compared directly."""
+    """Density scatter plot after Okamoto (2017, QJRMS, Fig. 2): model BT (x) vs
+    observed BT (y) as a 2-D histogram, coloured by log10(count per bin) in discrete
+    steps. Dashed lines mark O-B = const (plot.scatter.omb_lines).
+    Rows = experiments, columns = channels; one colour scale shared by all panels
+    so the experiments can be compared directly."""
     pcfg = cfg.get("plot", {}) or {}
     scfg = pcfg.get("scatter", {}) or {}
     channels = [int(c) for c in scfg.get("channels", [8, 9, 10, 13])]
-    bw = float(scfg.get("bin_width", 1.0))
+    bw = float(scfg.get("bin_width", 0.5))
     normalize = bool(scfg.get("normalize", False))   # True -> fraction of points in panel
-    cmap = scfg.get("cmap", "viridis")
+    cmap = scatter_cmap(scfg.get("cmap", "okamoto"))
+    step = float(scfg.get("level_step", 0.25))       # colour step in log10 units
+    omb_lines = [float(x) for x in scfg.get("omb_lines", [0, 10, -10, 30, -30])]
+    show_stats = bool(scfg.get("show_stats", True))
     nrows, ncols = len(exps), len(channels)
-    figsize = scfg.get("figsize", [3.6 * ncols + 0.8, 3.4 * nrows + 0.8])
+    figsize = scfg.get("figsize", [3.5 * ncols + 0.4, 3.5 * nrows + 1.3])
 
-    # 2-D histograms first, so every panel can share one LogNorm
+    # 2-D histograms first, so every panel can share one colour scale
     panels, vmax, vmin_pos = {}, 0.0, np.inf
     for ch in channels:
         lo, hi = scatter_range(scfg, ch, all_data, exps)
@@ -277,42 +297,62 @@ def plot_scatter(all_data, exps, cfg, ncycles):
     vmax = scfg.get("vmax", vmax)
     if not np.isfinite(vmin) or vmax <= 0:
         vmin, vmax = 1.0, 10.0
-    norm = LogNorm(vmin=vmin, vmax=vmax)
+    # discrete levels in log10 space, whole decades at both ends (0..4 in Okamoto)
+    llo, lhi = np.floor(np.log10(vmin)), np.ceil(np.log10(vmax))
+    if lhi <= llo:
+        lhi = llo + 1.0
+    levels = np.arange(llo, lhi + 0.5 * step, step)
+    norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
 
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False,
                              constrained_layout=True)
     mesh = None
+    letters = "abcdefghijklmnopqrstuvwxyz"
     for ie, exp in enumerate(exps):
         for ic, ch in enumerate(channels):
             ax = axes[ie][ic]
             H, edges, h, o = panels[(exp["label"], ch)]
-            mesh = ax.pcolormesh(edges, edges, H.T, cmap=cmap, norm=norm,
+            with np.errstate(divide="ignore", invalid="ignore"):
+                logH = np.log10(H)
+            mesh = ax.pcolormesh(edges, edges, logH.T, cmap=cmap, norm=norm,
                                  rasterized=True)
-            ax.plot(edges[[0, -1]], edges[[0, -1]], "k--", lw=0.8)   # 1:1 line
-            ax.set_xlim(edges[0], edges[-1])
-            ax.set_ylim(edges[0], edges[-1])
+            lo, hi = edges[0], edges[-1]
+            for d in omb_lines:                   # O - B = d  ->  y = x + d
+                ax.plot([lo, hi], [lo + d, hi + d], ls=(0, (4, 3)), color="0.35",
+                        lw=0.7, zorder=3)
+            ax.set_xlim(lo, hi)
+            ax.set_ylim(lo, hi)
             ax.set_aspect("equal")
-            if h.size:
-                omb = o - h
-                r = np.corrcoef(h, o)[0, 1] if h.size > 1 else np.nan
-                txt = (f"N={h.size:,}\nO-B mean={np.mean(omb):.2f}\n"
-                       f"O-B rms={np.sqrt(np.mean(omb * omb)):.2f}\nR={r:.3f}")
-            else:
-                txt = "N=0"
-            ax.text(0.03, 0.97, txt, transform=ax.transAxes, va="top", ha="left",
-                    fontsize=7.5,
-                    bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.85))
-            ax.set_title(f"{exp['label']}  Ch {ch}", fontsize=10)
-            ax.set_xlabel("Model BT (K)" if ie == nrows - 1 else "")
-            ax.set_ylabel("Observed BT (K)" if ic == 0 else "")
-            ax.grid(alpha=0.3)
+            if show_stats:
+                if h.size:
+                    omb = o - h
+                    r = np.corrcoef(h, o)[0, 1] if h.size > 1 else np.nan
+                    txt = (f"N={h.size:,}\nO-B mean={np.mean(omb):.2f}\n"
+                           f"O-B SD={np.std(omb):.2f}\nR={r:.3f}")
+                else:
+                    txt = "N=0"
+                ax.text(0.97, 0.03, txt, transform=ax.transAxes, va="bottom", ha="right",
+                        fontsize=7, zorder=4,
+                        bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.8))
+            k = ie * ncols + ic
+            ax.set_title(f"({letters[k % 26]})  {exp['label']}  Band{ch}",
+                         loc="left", fontsize=10)
+            ax.set_xlabel("model (K)" if ie == nrows - 1 else "")
+            ax.set_ylabel("observation (K)" if ic == 0 else "")
+            ax.tick_params(direction="out")
 
     qc = cfg.get("qc_value", 0)
-    fig.suptitle(f"AHI Himawari-9 model vs observed BT  (EffectiveQC=={qc}, "
-                 f"{ncycles} cycles, lead {cfg.get('lead', 0)}h, bin {bw:g} K)",
-                 fontsize=11)
-    fig.colorbar(mesh, ax=axes, shrink=0.85, aspect=30,
-                 label="Fraction of points per bin" if normalize else "Count per bin")
+    lines = ", ".join(f"{d:+g}" if d else "0" for d in omb_lines)
+    fig.suptitle(f"AHI Himawari-9 density scatter of model and observed BT  "
+                 f"(EffectiveQC=={qc}, {ncycles} cycles, lead {cfg.get('lead', 0)}h)\n"
+                 f"colour: log10 number in {bw:g} K bins;  dashed: O−B = {lines} K",
+                 fontsize=10.5)
+    cb = fig.colorbar(mesh, ax=axes, orientation="horizontal",
+                      shrink=min(0.6, 0.25 * ncols + 0.1), aspect=35, pad=0.02,
+                      ticks=np.arange(llo, lhi + 0.5, 1.0))
+    cb.set_label("log10(fraction of points per bin)" if normalize
+                 else "log10(number per bin)")
+    cb.ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%g"))
     return fig
 
 
