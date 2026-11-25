@@ -6,6 +6,16 @@ Multi-cycle OmB / normalized-OmB distribution for Himawari AHI channels.
   normalized OmB = OmB / EffectiveError/brightnessTemperature
   selection      : EffectiveQC/brightnessTemperature == qc_value (default 0)
 
+Figures:
+  <prefix>_OmB_<tag>        OmB histogram, one panel per channel
+  <prefix>_NormOmB_<tag>    normalized OmB histogram, one panel per channel
+  <prefix>_scatter_<tag>    (plot.scatter.enabled) model BT (x) vs observed BT (y),
+                            coloured by point density (log scale);
+                            rows = experiments, columns = plot.scatter.channels
+  <prefix>_boxplot_<tag>    (plot.boxplot.enabled) Okamoto (2017, QJRMS, Fig. 11)-style
+                            boxplots of observed / model BT and of O-B; one row per
+                            channel; optionally before QC (plot.boxplot.apply_qc: false)
+
 Usage:
   python plot_omb_dist.py plot_omb_dist.yaml
 """
@@ -19,6 +29,7 @@ import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
 
 GROUP_VAR = "brightnessTemperature"
 FILL_THRESH = 1.0e30   # float fill is -3.368795e+38
@@ -58,7 +69,9 @@ def normalize_experiments(cfg):
 # Reading
 # ---------------------------------------------------------------------------
 def read_file(path, channels, qc_value):
-    """Return {ch: (omb, nomb)} for QC-passed, valid points in one file."""
+    """Return {ch: (obs, hofx, err, qc_pass)} for every point with valid obs and hofx
+    in one file (before QC). qc_pass = EffectiveQC == qc_value and a valid
+    EffectiveError > 0."""
     with h5py.File(path, "r") as f:
         chan_list = np.asarray(f["Channel"][:]).astype(int)
         obs = np.asarray(f["ObsValue/" + GROUP_VAR][:], dtype=np.float64)
@@ -73,20 +86,33 @@ def read_file(path, channels, qc_value):
             raise KeyError(f"channel {ch} not in file {path} (has {chan_list.tolist()})")
         i = idx[0]
         o, h, e, q = obs[:, i], hofx[:, i], err[:, i], qc[:, i]
-        ok = (
-            (q == qc_value)
-            & np.isfinite(o) & np.isfinite(h) & np.isfinite(e)
-            & (np.abs(o) < FILL_THRESH) & (np.abs(h) < FILL_THRESH)
-            & (np.abs(e) < FILL_THRESH) & (e > 0.0)
-        )
-        omb = o[ok] - h[ok]
-        out[ch] = (omb, omb / e[ok])
+        valid = (np.isfinite(o) & np.isfinite(h)
+                 & (np.abs(o) < FILL_THRESH) & (np.abs(h) < FILL_THRESH))
+        e_ok = np.isfinite(e) & (np.abs(e) < FILL_THRESH) & (e > 0.0)
+        qc_pass = (q == qc_value) & e_ok
+        out[ch] = (o[valid], h[valid], e[valid], qc_pass[valid])
+    return out
+
+
+RAW_KEYS = ("obs", "hofx", "err", "qc_pass")
+
+
+def qc_view(raw):
+    """{ch: raw arrays} -> {ch: {omb, nomb, obs, hofx}} for QC-passed points only."""
+    out = {}
+    for ch, d in raw.items():
+        ok = d["qc_pass"]
+        o, h = d["obs"][ok], d["hofx"][ok]
+        omb = o - h
+        out[ch] = {"omb": omb, "nomb": omb / d["err"][ok], "obs": o, "hofx": h}
     return out
 
 
 def collect(cfg, exp, cycles, channels):
+    """Read all cycles of one experiment; returns ({ch: {RAW_KEYS: array}}, used cycles)
+    with every valid point (QC not applied yet, see qc_view)."""
     templates = dict(cfg.get("templates", {}) or {})
-    data = {ch: {"omb": [], "nomb": []} for ch in channels}
+    data = {ch: {k: [] for k in RAW_KEYS} for ch in channels}
     used, missing = [], []
     for cyc in cycles:
         path = cfg["path_template"].format(
@@ -98,13 +124,14 @@ def collect(cfg, exp, cycles, channels):
                 continue
             raise FileNotFoundError(path)
         res = read_file(path, channels, int(cfg.get("qc_value", 0)))
-        for ch, (omb, nomb) in res.items():
-            data[ch]["omb"].append(omb)
-            data[ch]["nomb"].append(nomb)
+        for ch, arrays in res.items():
+            for k, a in zip(RAW_KEYS, arrays):
+                data[ch][k].append(a)
         used.append(cyc)
     for ch in channels:
-        for k in ("omb", "nomb"):
-            data[ch][k] = np.concatenate(data[ch][k]) if data[ch][k] else np.empty(0)
+        for k in RAW_KEYS:
+            data[ch][k] = (np.concatenate(data[ch][k]) if data[ch][k]
+                           else np.empty(0, dtype=bool if k == "qc_pass" else np.float64))
     print(f"[{exp['label']}] cycles used: {len(used)}, missing: {len(missing)}")
     if missing:
         print(f"[{exp['label']}]   missing: {' '.join(missing)}")
@@ -200,6 +227,240 @@ def plot_kind(kind, all_data, exps, channels, cfg, ncycles):
     return fig
 
 
+def scatter_range(scfg, ch, all_data, exps):
+    """Axis range for one channel: plot.scatter.range is [lo, hi] for every channel,
+    a {channel: [lo, hi]} dict, or null -> 0.1-99.9 percentiles of obs and model BT
+    over all experiments (rounded out to 5 K)."""
+    rng = scfg.get("range")
+    if isinstance(rng, dict):
+        rng = rng.get(ch, rng.get(str(ch)))
+    if rng is not None:
+        return float(rng[0]), float(rng[1])
+    vals = [all_data[e["label"]][ch][k] for e in exps for k in ("obs", "hofx")]
+    vals = np.concatenate(vals) if vals else np.empty(0)
+    if vals.size == 0:
+        return 180.0, 320.0
+    lo, hi = np.percentile(vals, [0.1, 99.9])
+    return 5.0 * np.floor(lo / 5.0), 5.0 * np.ceil(hi / 5.0)
+
+
+# Discrete jet-like palette after Okamoto (2017, QJRMS 143:1517, Figs 2-3):
+# dark navy -> blue -> light blue -> cyan -> green -> yellow -> orange -> red -> dark red
+OKAMOTO_COLORS = [
+    "#1b1d5e", "#262f86", "#2e45a8", "#3560c4", "#3d7ad6", "#4b94df",
+    "#5aaee0", "#6cc5d4", "#86d2a6", "#a8d86c", "#cbdc3c", "#ecd82a",
+    "#f6ad25", "#f07b20", "#e2441c", "#b51d1d", "#7a1010",
+]
+
+
+def scatter_cmap(name):
+    if name in (None, "okamoto"):
+        return LinearSegmentedColormap.from_list("okamoto", OKAMOTO_COLORS)
+    return plt.get_cmap(name)
+
+
+def plot_scatter(all_data, exps, cfg, ncycles):
+    """Density scatter plot after Okamoto (2017, QJRMS, Fig. 2): model BT (x) vs
+    observed BT (y) as a 2-D histogram, coloured by log10(count per bin) in discrete
+    steps. Dashed lines mark O-B = const (plot.scatter.omb_lines).
+    Rows = experiments, columns = channels; one colour scale shared by all panels
+    so the experiments can be compared directly."""
+    pcfg = cfg.get("plot", {}) or {}
+    scfg = pcfg.get("scatter", {}) or {}
+    channels = [int(c) for c in scfg.get("channels", [8, 9, 10, 13])]
+    bw = float(scfg.get("bin_width", 0.5))
+    normalize = bool(scfg.get("normalize", False))   # True -> fraction of points in panel
+    cmap = scatter_cmap(scfg.get("cmap", "okamoto"))
+    step = float(scfg.get("level_step", 0.25))       # colour step in log10 units
+    omb_lines = [float(x) for x in scfg.get("omb_lines", [0, 10, -10, 30, -30])]
+    show_stats = bool(scfg.get("show_stats", True))
+    nrows, ncols = len(exps), len(channels)
+    figsize = scfg.get("figsize", [3.5 * ncols + 0.4, 3.5 * nrows + 1.3])
+
+    # 2-D histograms first, so every panel can share one colour scale
+    panels, vmax, vmin_pos = {}, 0.0, np.inf
+    for ch in channels:
+        lo, hi = scatter_range(scfg, ch, all_data, exps)
+        edges = np.arange(lo, hi + 0.5 * bw, bw)
+        for exp in exps:
+            d = all_data[exp["label"]][ch]
+            h, o = d["hofx"], d["obs"]
+            H, _, _ = np.histogram2d(h, o, bins=[edges, edges])
+            if normalize and h.size:
+                H = H / h.size
+            H[H == 0] = np.nan                    # empty bins left blank
+            if np.isfinite(H).any():
+                vmax = max(vmax, np.nanmax(H))
+                vmin_pos = min(vmin_pos, np.nanmin(H))
+            panels[(exp["label"], ch)] = (H, edges, h, o)
+    vmin = scfg.get("vmin", vmin_pos if normalize else 1.0)
+    vmax = scfg.get("vmax", vmax)
+    if not np.isfinite(vmin) or vmax <= 0:
+        vmin, vmax = 1.0, 10.0
+    # discrete levels in log10 space, whole decades at both ends (0..4 in Okamoto)
+    llo, lhi = np.floor(np.log10(vmin)), np.ceil(np.log10(vmax))
+    if lhi <= llo:
+        lhi = llo + 1.0
+    levels = np.arange(llo, lhi + 0.5 * step, step)
+    norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False,
+                             constrained_layout=True)
+    mesh = None
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for ie, exp in enumerate(exps):
+        for ic, ch in enumerate(channels):
+            ax = axes[ie][ic]
+            H, edges, h, o = panels[(exp["label"], ch)]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                logH = np.log10(H)
+            mesh = ax.pcolormesh(edges, edges, logH.T, cmap=cmap, norm=norm,
+                                 rasterized=True)
+            lo, hi = edges[0], edges[-1]
+            for d in omb_lines:                   # O - B = d  ->  y = x + d
+                ax.plot([lo, hi], [lo + d, hi + d], ls=(0, (4, 3)), color="0.35",
+                        lw=0.7, zorder=3)
+            ax.set_xlim(lo, hi)
+            ax.set_ylim(lo, hi)
+            ax.set_aspect("equal")
+            if show_stats:
+                if h.size:
+                    omb = o - h
+                    r = np.corrcoef(h, o)[0, 1] if h.size > 1 else np.nan
+                    txt = (f"N={h.size:,}\nO-B mean={np.mean(omb):.2f}\n"
+                           f"O-B SD={np.std(omb):.2f}\nR={r:.3f}")
+                else:
+                    txt = "N=0"
+                ax.text(0.97, 0.03, txt, transform=ax.transAxes, va="bottom", ha="right",
+                        fontsize=7, zorder=4,
+                        bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.8))
+            k = ie * ncols + ic
+            ax.set_title(f"({letters[k % 26]})  {exp['label']}  Band{ch}",
+                         loc="left", fontsize=10)
+            ax.set_xlabel("model (K)" if ie == nrows - 1 else "")
+            ax.set_ylabel("observation (K)" if ic == 0 else "")
+            ax.tick_params(direction="out")
+
+    qc = cfg.get("qc_value", 0)
+    lines = ", ".join(f"{d:+g}" if d else "0" for d in omb_lines)
+    fig.suptitle(f"AHI Himawari-9 density scatter of model and observed BT  "
+                 f"(EffectiveQC=={qc}, {ncycles} cycles, lead {cfg.get('lead', 0)}h)\n"
+                 f"colour: log10 number in {bw:g} K bins;  dashed: O−B = {lines} K",
+                 fontsize=10.5)
+    cb = fig.colorbar(mesh, ax=axes, orientation="horizontal",
+                      shrink=min(0.6, 0.25 * ncols + 0.1), aspect=35, pad=0.02,
+                      ticks=np.arange(llo, lhi + 0.5, 1.0))
+    cb.set_label("log10(fraction of points per bin)" if normalize
+                 else "log10(number per bin)")
+    cb.ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%g"))
+    return fig
+
+
+def _box_label(name, x, show_stats):
+    if not show_stats or x.size == 0:
+        return name
+    return f"{name}\nmean {np.mean(x):.1f}\nSD {np.std(x):.1f}"
+
+
+def _draw_boxes(ax, arrays, labels, colors, bcfg):
+    """Boxes = Q1..Q3, whiskers = whis * IQR, dots = outliers,
+    thick line = median, x = mean (as in Okamoto 2017, QJRMS, Fig. 11)."""
+    arrays = [a if a.size else np.array([np.nan]) for a in arrays]
+    bp = ax.boxplot(
+        arrays, whis=float(bcfg.get("whis", 1.5)), widths=0.6,
+        showmeans=True, showfliers=bool(bcfg.get("show_outliers", True)),
+        patch_artist=True,
+        medianprops=dict(color="k", lw=2.0),
+        meanprops=dict(marker="x", markeredgecolor="k", markersize=7),
+        flierprops=dict(marker=".", markersize=2, markeredgecolor="0.35",
+                        markerfacecolor="0.35", alpha=0.4))
+    for patch, c in zip(bp["boxes"], colors):
+        patch.set_facecolor(c)
+        patch.set_alpha(0.55)
+        patch.set_edgecolor("k")
+    for fl in bp["fliers"]:
+        fl.set_rasterized(True)        # many outliers -> keep vector output small
+    ax.set_xticks(np.arange(1, len(labels) + 1))
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.grid(axis="y", alpha=0.3)
+
+
+def plot_boxplot(data, exps, cfg, ncycles):
+    """Okamoto (2017, QJRMS, Fig. 11)-style boxplots, one row per channel:
+         left : observed BT and model BT of every experiment
+         right: O-B of every experiment
+    `data` is {label: {ch: {obs, hofx}}}, already QC-selected or not (apply_qc)."""
+    pcfg = cfg.get("plot", {}) or {}
+    bcfg = pcfg.get("boxplot", {}) or {}
+    channels = [int(c) for c in bcfg.get("channels", [8, 9, 10, 13])]
+    apply_qc = bool(bcfg.get("apply_qc", True))
+    obs_mode = bcfg.get("obs", "auto")        # auto | shared | per_experiment
+    show_stats = bool(bcfg.get("show_stats", True))
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    obs_color = "0.6"
+
+    def shared_obs(ch):
+        if obs_mode == "shared":
+            return True
+        if obs_mode == "per_experiment":
+            return False
+        o0 = data[exps[0]["label"]][ch]["obs"]
+        return all(np.array_equal(o0, data[e["label"]][ch]["obs"]) for e in exps[1:])
+
+    n_a = len(exps) + (1 if all(shared_obs(ch) for ch in channels) else len(exps))
+    nrows = len(channels)
+    figsize = bcfg.get("figsize", [1.3 * (n_a + len(exps)) + 2.5, 3.8 * nrows + 0.6])
+    fig, axes = plt.subplots(nrows, 2, figsize=figsize, squeeze=False,
+                             gridspec_kw=dict(width_ratios=[n_a, len(exps) + 0.5]),
+                             constrained_layout=True)
+
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for ir, ch in enumerate(channels):
+        d = {e["label"]: data[e["label"]][ch] for e in exps}
+        # (a) observation / model BT
+        if shared_obs(ch):
+            arrs = [d[exps[0]["label"]]["obs"]]
+            labs = [_box_label("OB", arrs[0], show_stats)]
+            cols = [obs_color]
+        else:
+            arrs = [d[e["label"]]["obs"] for e in exps]
+            labs = [_box_label(f"{e['label']} OB", a, show_stats) for e, a in zip(exps, arrs)]
+            cols = [obs_color] * len(exps)
+        for ie, e in enumerate(exps):
+            h = d[e["label"]]["hofx"]
+            arrs.append(h)
+            labs.append(_box_label(e["label"], h, show_stats))
+            cols.append(colors[ie % len(colors)])
+        ax = axes[ir][0]
+        _draw_boxes(ax, arrs, labs, cols, bcfg)
+        if bcfg.get("bt_ylim"):
+            ax.set_ylim(*bcfg["bt_ylim"])
+        ax.set_ylabel("Observation / Model BT (K)")
+        ax.set_title(f"({letters[(2 * ir) % 26]}) Observation / Model BT  (Ch {ch})",
+                     loc="left", fontsize=10)
+
+        # (b) O-B
+        ombs = [d[e["label"]]["obs"] - d[e["label"]]["hofx"] for e in exps]
+        ax = axes[ir][1]
+        _draw_boxes(ax, ombs,
+                    [_box_label(e["label"], a, show_stats) for e, a in zip(exps, ombs)],
+                    [colors[ie % len(colors)] for ie in range(len(exps))], bcfg)
+        ax.axhline(0.0, color="gray", lw=0.8, zorder=0)
+        if bcfg.get("omb_ylim"):
+            ax.set_ylim(*bcfg["omb_ylim"])
+        ax.set_ylabel("O−B (K)")
+        ax.set_title(f"({letters[(2 * ir + 1) % 26]}) O−B  (Ch {ch})",
+                     loc="left", fontsize=10)
+
+    qc = (f"EffectiveQC=={cfg.get('qc_value', 0)}" if apply_qc
+          else "before QC (all valid obs)")
+    fig.suptitle(f"AHI Himawari-9 BT and O−B distributions  ({qc}, {ncycles} cycles, "
+                 f"lead {cfg.get('lead', 0)}h)\n"
+                 f"box: Q1–Q3, whiskers: {float(bcfg.get('whis', 1.5)):g}×IQR, "
+                 f"line: median, ×: mean", fontsize=11)
+    return fig
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
@@ -208,13 +469,29 @@ def main():
         cfg = yaml.safe_load(f)
 
     channels = [int(c) for c in cfg.get("channels", [8, 9, 10, 13])]
+    pcfg = cfg.get("plot", {}) or {}
+    scfg = pcfg.get("scatter", {}) or {}
+    bcfg = pcfg.get("boxplot", {}) or {}
+    do_scatter = bool(scfg.get("enabled", False))
+    do_box = bool(bcfg.get("enabled", False))
+    box_raw = do_box and not bool(bcfg.get("apply_qc", True))  # boxplot needs pre-QC data
+    read_channels = list(channels)
+    for on, sub in ((do_scatter, scfg), (do_box, bcfg)):
+        if on:
+            read_channels += [int(c) for c in sub.get("channels", [8, 9, 10, 13])
+                              if int(c) not in read_channels]
     cycles = build_cycles(cfg["cycles"])
     exps = normalize_experiments(cfg)
     print(f"cycles requested: {len(cycles)} ({cycles[0]} -> {cycles[-1]})")
 
-    all_data, ncyc = {}, 0
+    all_data, raw_data, ncyc = {}, {}, 0
     for exp in exps:
-        all_data[exp["label"]], used = collect(cfg, exp, cycles, channels)
+        raw, used = collect(cfg, exp, cycles, read_channels)
+        all_data[exp["label"]] = qc_view(raw)
+        if box_raw:
+            raw_data[exp["label"]] = {ch: {"obs": d["obs"], "hofx": d["hofx"]}
+                                      for ch, d in raw.items()}
+        del raw
         ncyc = max(ncyc, len(used))
 
     ocfg = cfg.get("output", {}) or {}
@@ -228,6 +505,20 @@ def main():
     for kind, name in (("omb", "OmB"), ("nomb", "NormOmB")):
         fig = plot_kind(kind, all_data, exps, channels, cfg, ncyc)
         out = os.path.join(odir, f"{prefix}_{name}_{tag}.{fmt}")
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        print(f"saved {out}")
+
+    if do_scatter:
+        fig = plot_scatter(all_data, exps, cfg, ncyc)
+        out = os.path.join(odir, f"{prefix}_scatter_{tag}.{fmt}")
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        print(f"saved {out}")
+
+    if do_box:
+        fig = plot_boxplot(raw_data if box_raw else all_data, exps, cfg, ncyc)
+        out = os.path.join(odir, f"{prefix}_boxplot_{tag}.{fmt}")
         fig.savefig(out, dpi=dpi)
         plt.close(fig)
         print(f"saved {out}")
