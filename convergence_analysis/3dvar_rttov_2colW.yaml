@@ -1,0 +1,15 @@
+# Settings for plot_cost_grad_multicycle.py
+# Usage: ./plot_cost_grad_multicycle.py 3dvar_rttov.yaml
+# Command-line options (e.g. --end 2024091620) override the values below.
+
+# Experiment CyclingDA directory; logs are read from <base>/<yyyymmddhh>/<subpath>
+base: /scratch/users/industry/nea/hucc/regional_mpasjedi/hucc_3dvar_regional_vbal_rttov_2colW_AllSky_AHI_offlineBC_offset/CyclingDA
+
+start: 2024091613        # first cycle (yyyymmddhh)
+end: 2024091712          # last cycle  (yyyymmddhh)
+interval: 1              # hours between cycles
+
+subpath: run/mem001/jedi.log
+prefix: 3dvar_rttov_2colW_offlineBC    # output: <prefix>_A_normred.png, ..., <prefix>_summary.csv
+outdir: ./output/3dvar_rttov_2colW_offlineBC   # output directory (created if missing; ~ and $VAR expanded)
+panels: true                    # also make <prefix>_D_panels.png

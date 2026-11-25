@@ -1,0 +1,67 @@
+paths:
+  exp_dir: "/scratch/users/industry/nea/hucc/regional_mpasjedi/"
+  output_dir: "/home/project/17001770/weather_department/dae/hucc/diag_tools/common_obs_diag/output/noDA_diffH_2024091712"
+
+# "da"   -> has both OMB and OMA (CyclingDA/{cycle}/dbOut/obsout_da_{obs}.h5)
+# "hofx" -> OMB only, no analysis check (H(x) vs obs, {cycle}/dbOut/obsout_hofx_{obs}.h5)
+# "hofx-verify-bg" -> OMB only, background verification
+#                     (Verification/bg/mean/{cycle}/dbOut/obsout_hofx_{obs}.h5)
+# "hofx-verify-bg-an" -> OMB from Verification/bg/mean + OMA from Verification/an/mean;
+#                        common obs defined separately: OMB across all bg, OMA across all an
+# Applies to every experiment below -- mixing da/hofx experiments in one run isn't supported.
+mode: "hofx-verify-bg"
+
+experiments:
+  names:
+    - "hucc_hofx_forecast_H-crtm-2024091712"
+    - "hucc_hofx_forecast_H-rttov-2024091712"
+# Optional, hofx-verify-* modes only (one entry per experiment; omit a key or use
+# null to keep the default). Files are read from
+#   {exp}/Verification/{verify_bg_dir|verify_an_dir}/mean/{cycle}[/{verify_lead_hr}hr]/dbOut
+# e.g. a HofX-suite state named "fc" -> verify_bg_dir: "fc", verify_lead_hr: 0
+  verify_bg_dir:  ["fc", "fc"]   # default "bg"
+  #verify_an_dir:  ["an", null]   # default "an" (hofx-verify-bg-an only)
+  verify_lead_hr: [0, 0]      # default null (no {lead}hr directory)
+  labels:
+    - "noDA-crtm"
+    - "noDA-rttov"
+  outerloop:
+    - 2
+    - 2
+  n_member:
+    - 1
+    - 1
+
+sensors:
+   # - "sfc"
+   # - "satwind"
+   # - "gnssrorefncep"
+     - "ahi-cld_himawari9"
+   # - "aircraft"
+   # - "sondes"
+    #- "radar_rw"
+    #- "radar_zh_vertinterp"
+
+domains:
+  global: [null, null, null, null]  # No masking
+  NXTro: [30.0, 90.0, -180.0, 180.0]
+  SXTro: [-90.0, -30.0, -180.0, 180.0]
+  NTro: [5.0, 30.0, -180.0, 180.0]
+  STro: [-30.0, -5.0, -180.0, 180.0]
+  ITCZ: [-5.0, 5.0, -180.0, 180.0]
+  Tro: [-23.5, 23.5, -180.0, 180.0]
+
+plot_settings:
+  apply_domains: ["global"]
+  plot_oma: true
+  save_graphics: true
+
+stats_settings:
+  ci_method: 'bootstrap'  # paired_t_test, bootstrap
+  qc_flag: [0] # common obs QC flags
+  check_obsvalue: true # common obs must also have identical ObsValue in every experiment
+
+time_settings:
+  start_time: "2024-09-17 12:00:00"
+  end_time:  "2024-09-18 12:00:00"
+  interval: 1

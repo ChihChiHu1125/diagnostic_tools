@@ -1,0 +1,93 @@
+# plot_mpas_diff.py 設定檔
+#   python plot_mpas_diff.py -c plot_mpas_diff.yaml
+
+# ---- 要畫的 cycle ----
+#   {start, end, interval_hours}，或直接列 list: [2024091612, 2024091618]
+#   每個 cycle 自動提供兩個樣板：
+#     {cycle} = YYYYMMDDHH           例 2024091613
+#     {date}  = YYYY-MM-DD_HH.MM.SS  例 2024-09-16_13.00.00
+cycles:
+  start: 2024091613
+  end: 2024091712
+  interval_hours: 6
+
+skip_missing: true   # 有檔案不存在時：true = 跳過該 cycle，false = 直接報錯
+
+# ---- 路徑樣板：下面的路徑可以用 {key} 引用這裡的值 (也可引用 {cycle}/{date}) ----
+templates:
+  root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+
+invariant: /home/project/17001770/weather_department/cmd/ncar/taosun/regional_mpasjedi/Invariant/x1.522172.invariant.nc
+time_idx: 0    # 時間索引 (Time 維度)
+
+# ---- 檔案：key 自訂，panels 用 key 指定要相減的檔案；檔案數量不限 ----
+files:
+  bg_crtm:
+    path: "{root}/hucc_3dvar_regional_vbal_crtm_JacQcQi_AllSky_AHI/CyclingDA/{cycle}/bg/bg.{date}.nc"
+    label: bg (CRTM, JacQcQi)
+  an_crtm:
+    path: "{root}/hucc_3dvar_regional_vbal_crtm_JacQcQi_AllSky_AHI/CyclingDA/{cycle}/an/an.{date}.nc"
+    label: an (CRTM, JacQcQi)
+  bg_rttov:
+    path: "{root}/hucc_3dvar_regional_vbal_rttov_AllSky_AHI/CyclingDA/{cycle}/bg/bg.{date}.nc"
+    label: bg (RTTOV)
+  an_rttov:
+    path: "{root}/hucc_3dvar_regional_vbal_rttov_AllSky_AHI/CyclingDA/{cycle}/an/an.{date}.nc"
+    label: an (RTTOV)
+
+# ---- 每張圖的 panel：'A - B' (減號兩側要空白)，數量不限 ----
+#   也可寫成 {diff: 'A - B', title: '自訂標題'}；沒給 title 就自動用 label 組
+#   只有這裡用到的檔案才會被讀
+panels:
+  - an_crtm - bg_crtm
+  - an_rttov - bg_rttov
+#  - an_rttov - an_crtm
+
+# ---- 非 _vi 變數預設要畫的層 (0-based)；每個變數可用 levels 覆寫 ----
+levels: [8, 11, 17, 24, 29, 36, 43, 48, 54]
+
+# ---- 要畫的變數 ----
+#   字串，或 {name, levels, vabs}
+#   - 用 '+' 加總多個變數；要嘛全部 _vi、要嘛全部不是
+#   - _vi  : 垂直積分 (kg/m^2)，每個變數一張圖
+#   - 非 _vi: 每個 level 一張圖；q 開頭轉 g/kg，其他 (如 theta) 用檔案原單位
+#   - vabs : 對稱色階 ±vabs；不給就依 plot.auto_pct 自動決定 (每張圖各自算)
+variables:
+  - name: qv
+    levels: [8, 11, 17, 24, 29, 36, 43]
+  - name: theta
+    levels: [8, 11, 17, 24, 29, 36, 43, 48, 54]
+  - name: qv_vi
+    vabs: 0.80
+  - name: qc_vi + qr_vi
+    vabs: 0.10
+  - name: qi_vi + qg_vi + qs_vi
+    vabs: 0.18
+  - name: qi_vi + qg_vi + qs_vi + qc_vi + qr_vi
+    vabs: 0.18
+  # - {name: qi_vi, vabs: 0.06}
+  # - {name: qg_vi, vabs: 0.12}
+  # - {name: qs_vi, vabs: 0.20}
+  # - {name: qc_vi, vabs: 0.08}
+  # - {name: qr_vi, vabs: 0.40}
+  # - name: theta
+  #   levels: [24, 36]
+
+# ---- 繪圖設定 ----
+plot:
+  cmap: RdBu_r
+  auto_pct: 99            # 自動色階：取 |diff| 的第幾百分位
+  marker_size: 1
+  ncols: null             # 每列幾個 panel；null = 全部排一列
+  panel_size: [6.7, 6.0]  # 每個 panel 的寬、高 (inch)
+  extent: null            # [lon_min, lon_max, lat_min, lat_max]；null = 整個網格
+
+# ---- 存圖設定 ----
+#   檔名: {prefix}_{變數}_lev{NN}.{format}  或  {prefix}_{變數}.{format} (_vi)
+#   dir / prefix 可用 {cycle}/{date}，每個 cycle 分開存
+output:
+  dir: ./figs/{cycle}
+  prefix: diff_{cycle}
+  format: png             # 也可以是 list，例如 [png, pdf]
+  dpi: 200
+  show: false             # true 會開視窗顯示 (batch job 請用 false)

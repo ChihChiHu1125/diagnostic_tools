@@ -1,0 +1,70 @@
+# plot_omb_dist.yaml — config for plot_omb_dist.py
+# Usage:  python plot_omb_dist.py plot_omb_dist.yaml
+
+# ---------------------------------------------------------------------------
+# Data location
+#   Placeholders available in path_template:
+#     {root}  {experiment}  {cycle}=YYYYMMDDHH  {lead}  and any key under `templates`
+# ---------------------------------------------------------------------------
+root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+path_template: "{root}/{experiment}/Verification/fc/mean/{cycle}/{lead}hr/dbOut/obsout_hofx_ahi-cld_himawari9.h5"
+lead: 0
+
+# One or more experiments; with several, histograms are overlaid for comparison.
+experiments:
+  - name: hucc_hofx_forecast_H-crtm
+    label: CRTM
+  - name: hucc_hofx_forecast_H-rttov
+    label: RTTOV
+
+# Cycles: either {start, end, interval_hours} or an explicit list of YYYYMMDDHH
+cycles:
+  start: 2024091613
+  end: 2024091712
+  interval_hours: 1
+# cycles: [2024091700, 2024091706, 2024091712]
+
+skip_missing: true   # false -> stop with an error if a file is missing
+
+# ---------------------------------------------------------------------------
+# Selection
+# ---------------------------------------------------------------------------
+channels: [8, 9, 10, 13]
+qc_value: 0          # keep only EffectiveQC == qc_value
+
+# ---------------------------------------------------------------------------
+# Plot settings
+# ---------------------------------------------------------------------------
+#   hist_range    : range used to build the bins (also the range for clipping)
+#   xlim          : x-axis range shown on the plot (default = hist_range)
+#   clip_to_edges : true  -> values outside hist_range are piled into the edge bins
+#                   false -> values outside hist_range are left out of the histogram
+#   (mean/std/rms in the panels always use ALL QC-passed data, regardless of these)
+plot:
+  omb:
+    hist_range: [-60.0, 60.0]   # K
+    xlim: [-10.0, 10.0]         # K
+    bin_width: 0.25
+    clip_to_edges: true
+  normalized_omb:
+    hist_range: [-6.0, 6.0]
+    xlim: [-4.0, 4.0]
+    bin_width: 0.1
+    clip_to_edges: true
+    gaussian: true              # overlay N(0,1) reference
+  style: line              # line -> curve through bin centers; hist -> bar histogram
+  density: true            # true -> PDF; false -> counts
+  log_y: true
+  stats_loc: lower center  # stats box inside panel: lower left | lower center | lower right
+  ncols: 2                 # panel layout (channels per row)
+  figsize: [11, 8]
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output:
+  dir: ./figs
+  prefix: ahi_himawari9_rttov_crtm
+  format: png
+  dpi: 150
+  stats_file: true         # also write a text summary of per-channel statistics

@@ -1,0 +1,11 @@
+/tmp_bin/
+/MPAS_STATS/
+/common_obs_diag/output/
+/common_obs_diag/archive/
+/convergence_analysis/output/
+/plot_ahi_hofx/figures/
+/plot_amb_obs_state_space/figs/
+/PlotJacobianProfile/figures/
+/plot_mpas_diff/figs/
+/plot_omb_dist/figs/
+

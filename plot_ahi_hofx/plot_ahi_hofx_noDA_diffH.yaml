@@ -1,0 +1,43 @@
+# Configuration for plot_ahi_hofx.py
+#   python plot_ahi_hofx.py plot_ahi_hofx.yaml
+
+# ---- file locations ----
+# {root}, {expt}, {time} are substituted at run time ({time} = YYYYMMDDHH)
+root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+path_template: "{root}/{expt}/Verification/fc/mean/{time}/0hr/dbOut/obsout_hofx_ahi-cld_himawari9.h5"
+
+# ---- time loop (YYYYMMDDHH, inclusive) ----
+time:
+  start: "2024091712"
+  end: "2024091812"
+  dt_hours: 1
+
+# ---- variables ----
+variable: brightnessTemperature   # variable name inside each group
+group: hofx                       # default model group (hofx, hofx0, hofx1, ...); can be overridden per experiment
+obs_group: ObsValue               # set to null to skip the OBS panel
+obs_label: OBS
+channel_index: 6                  # array index along the channel dimension (not the channel number)
+
+# ---- experiments: one panel each, in this order ----
+experiments:
+  - label: noDA-crtm
+    expt: hucc_hofx_forecast_H-crtm-2024091712
+  - label: noDA-rttov
+    expt: hucc_hofx_forecast_H-rttov-2024091712
+    # group: hofx                 # optional per-experiment override
+
+# ---- plot settings ----
+plot:
+  lat_range: [-10, 12]
+  lon_range: [91, 113]
+  marker_size: 5
+  title_utc_offset_hours: 0       # 0 -> UTC; 8 -> SGT
+  title_tz_label: UTC
+
+# ---- output ----
+output:
+  dir: ./figures
+  prefix: ahi_himawari9
+  dpi: 200
+  skip_missing: true              # skip a time if any file is missing (otherwise abort)

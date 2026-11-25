@@ -1,0 +1,112 @@
+# plot_omb_amb.py 設定檔
+#   python plot_omb_amb.py -c plot_omb_amb.yaml
+#
+# 每張圖：[obs panel 1] [obs panel 2] ... [model an - bg]
+#   預設：左 = OmB、中 = AmB (obs space)、右 = model state AmB
+# 圖數 = cycles x channels x model 變數 (非 _vi 每個 level 一張)
+
+# ---- 要畫的 cycle ----
+#   {start, end, interval_hours}，或直接列 list: [2024091612, 2024091618]
+#   內建樣板：{cycle} = YYYYMMDDHH，{date} = YYYY-MM-DD_HH.MM.SS
+cycles:
+  start: 2024091613
+  end: 2024091613
+  interval_hours: 1
+
+skip_missing: true   # 有檔案不存在：true = 跳過該 cycle，false = 報錯
+
+# ---- 路徑樣板 (可引用 {cycle}/{date}，也可互相引用前面的 key) ----
+templates:
+  root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+  expt: hucc_3dvar_regional_vbal_rttov_baranQi_AllSky_AHI_offlineBC_offset
+  cyc_dir: "{root}/{expt}/CyclingDA/{cycle}"
+
+# =====================================================================
+# obs space (IODA obsout h5)
+# =====================================================================
+obs:
+  path: "{cyc_dir}/dbOut/obsout_da_ahi-cld_himawari9.h5"
+  label: AHI                       # 標題用的 sensor 名稱
+  variable: brightnessTemperature
+  units: K
+  channel_index: [1,2,3,6]               # channel 維度的 index (不是通道號)；可列多個，每個各出一組圖
+
+  # QC：只保留 qc_group 值在 qc_keep 裡的點；qc_group: null = 不篩
+  #   每個 panel 可用 qc_group 覆寫 (例如 AmB 用 EffectiveQC1)
+  qc_group: EffectiveQC0
+  qc_keep: [0]
+
+  # 每個 panel：expr = 'GROUP' 或 'GROUP_A - GROUP_B' (減號兩側要空白)
+  #   3DVar 常見：ombg、oman、hofx0、hofx1、ObsValue
+  #     OmB = ombg                 (或 'ObsValue - hofx0')
+  #     AmB = 'ombg - oman'        (或 'hofx1 - hofx0')
+  #   group 名稱打錯時，錯誤訊息會列出檔案裡可用的 group
+  #   vabs：對稱色階 ±vabs；不給就自動 (取 |值| 的第 plot.auto_pct 百分位，仍是對稱)
+  #   obs_common_range: true = 沒給 vabs 的 obs panel 共用同一個自動範圍 (方便 OmB/AmB 直接比較)
+  obs_common_range: false
+  panels:
+    - expr: ombg
+      title: OmB
+      # vabs: 10
+    - expr: ombg - oman
+      title: AmB (obs space)
+      # vabs: 5
+      # qc_group: EffectiveQC1
+
+# =====================================================================
+# model state (MPAS)，最右邊一格
+# =====================================================================
+model:
+  invariant: /home/project/17001770/weather_department/cmd/ncar/taosun/regional_mpasjedi/Invariant/x1.522172.invariant.nc
+  time_idx: 0
+  files:
+    an:
+      path: "{cyc_dir}/an/an.{date}.nc"
+      label: an
+    bg:
+      path: "{cyc_dir}/bg/bg.{date}.nc"
+      label: bg
+  diff: an - bg
+
+  # 非 _vi 變數預設層 (0-based)；每個變數可用 levels 覆寫
+  levels: [24, 36]
+
+  # 同 plot_mpas_diff.yaml 的寫法：
+  #   '+' 加總；_vi = 垂直積分 (kg/m^2)；非 _vi 每個 level 一張；q 開頭轉 g/kg
+  variables:
+    - name: qc_vi + qi_vi + qs_vi + qg_vi
+      #vabs: 0.18
+    - name: qi_vi + qs_vi
+    - name: qs_vi
+    - name: qi_vi
+    - name: qc_vi
+    - name: qv_vi
+   #- name: qv
+   #   levels: [8, 11, 17, 24, 29, 33, 36, 43]
+   # - name: theta
+   #   levels: [8, 11, 17, 24, 29, 33, 36, 43, 48, 54]
+    # - theta
+    # - name: qv
+    #   levels: [17, 29]
+
+# ---- 繪圖設定 ----
+plot:
+  cmap: RdBu_r
+  auto_pct: 90              # 自動色階：|diff| 的第幾百分位
+  obs_marker_size: 12
+  model_marker_size: 1
+  panel_size: [6.7, 6.5]    # 每格寬、高 (inch)
+  extent: [91, 113, -10, 12]   # [lon_min, lon_max, lat_min, lat_max]；null = 整個網格
+  grid_step: 3              # 經緯線間隔 (度)；null = 不畫
+  show_stats: true          # 標題下加 N / mean / std
+  title_size: 12
+  suptitle_size: 15
+
+# ---- 存圖設定 ----
+#   檔名: {prefix}_ch{NN}_{model變數}[_lev{NN}].{format}
+output:
+  dir: ./figs/{expt}/{cycle}
+  prefix: omb_amb_{cycle}
+  format: png               # 或 list，例如 [png, pdf]
+  dpi: 200
+  show: false

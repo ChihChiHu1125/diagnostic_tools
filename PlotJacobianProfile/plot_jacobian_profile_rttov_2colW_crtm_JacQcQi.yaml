@@ -1,0 +1,238 @@
+# plot_jacobian_profile.yaml
+#
+# Jacobian vs. vertical profile from MPAS-JEDI HofX GOMsaver/YDIAGsaver output
+#   python plot_jacobian_profile.py plot_jacobian_profile.yaml
+#
+# Each figure: one (comparison, selection, channel, variable)
+#   left : model profile of the variable (one line per dataset), or, for the variables in
+#          the comparison's increment.variables, increments (e.g. an - bg) with the full
+#          profile(s) overlaid on a second (top) x axis
+#   right: Jacobian dBT/d(variable) of the comparison's jacobian_datasets (default: bg)
+#   text : obs BT, and per dataset model BT, model clear-sky BT, cloud proxy
+# Plus one map per (comparison, selection): reference model BT | obs BT, with the
+# selected locations marked.
+#
+# cloud proxy (always from the comparison's reference dataset, normally a bg):
+#   model = max(clear-sky BT - model BT, 0)
+#   obs   = max(clear-sky BT - obs BT,   0)
+
+# string templates, usable as {name} in any path below
+templates:
+  root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+  cycle: '2024091613'
+
+instrument: ahi-cld_himawari9
+
+# each dataset = one HofX dbOut directory (obsout_hofx_*, geoval_hofx_*, ydiags_hofx_*)
+#   operator: crtm | rttov   (decides GeoVaLs/Jacobian variable names and units)
+#   label/color/linestyle: line style in the figures
+datasets:
+  crtm_bg:
+    operator: crtm
+    dir: '{root}/hucc_saveydiags_crtm/Verification/bg/mean/{cycle}/dbOut'
+    label: CRTM bg
+    color: tab:blue
+    linestyle: '-'
+  crtm_an:
+    operator: crtm
+    dir: '{root}/hucc_saveydiags_crtm/Verification/an/mean/{cycle}/dbOut'
+    label: CRTM an
+    color: tab:blue
+    linestyle: '--'
+  crtm_JacQcQi_bg:
+    operator: crtm
+    dir: '{root}/hucc_saveydiags_crtm_JacQcQi/Verification/bg/mean/{cycle}/dbOut'
+    label: CRTM (JacQcQi) bg
+    color: tab:blue
+    linestyle: '-'
+  crtm_JacQcQi_an:
+    operator: crtm
+    dir: '{root}/hucc_saveydiags_crtm_JacQcQi/Verification/an/mean/{cycle}/dbOut'
+    label: CRTM (JacQcQi) an
+    color: tab:blue
+    linestyle: '--'
+  crtm_moreloops_bg:
+    operator: crtm
+    dir: '{root}/hucc_saveydiags_crtm_moreloops/Verification/bg/mean/{cycle}/dbOut'
+    label: CRTM (120 loops) bg
+    color: tab:blue
+    linestyle: '-'
+  crtm_moreloops_an:
+    operator: crtm
+    dir: '{root}/hucc_saveydiags_crtm_moreloops/Verification/an/mean/{cycle}/dbOut'
+    label: CRTM (120 loops) an
+    color: tab:blue
+    linestyle: '--'
+  rttov_bg:
+    operator: rttov
+    dir: '{root}/hucc_saveydiags_rttov/Verification/bg/mean/{cycle}/dbOut'
+    label: RTTOV bg
+    color: tab:red
+    linestyle: '-'
+  rttov_an:
+    operator: rttov
+    dir: '{root}/hucc_saveydiags_rttov/Verification/an/mean/{cycle}/dbOut'
+    label: RTTOV an
+    color: tab:red
+    linestyle: '--'
+  rttov_2colW_bg:
+    operator: rttov
+    dir: '{root}/hucc_saveydiags_rttov_2colW/Verification/bg/mean/{cycle}/dbOut'
+    label: RTTOV (2col) bg
+    color: tab:red
+    linestyle: '-'
+  rttov_2colW_an:
+    operator: rttov
+    dir: '{root}/hucc_saveydiags_rttov_2colW/Verification/an/mean/{cycle}/dbOut'
+    label: RTTOV (2col) an
+    color: tab:red
+    linestyle: '--'
+
+
+# which datasets go on the same figure; one set of figures per comparison
+#   reference: dataset used for the cloud proxy selection and the model BT map
+#              (default: first dataset in the list)
+#   jacobian_datasets: datasets drawn in the Jacobian (right) panel (default: [reference]);
+#     each entry is a dataset key, or {dataset: <key>, label: ..., color: ...,
+#     linestyle: ..., linewidth: ...} to override the dataset's line style in this panel only
+#   increment: optional; left panel shows increments instead of profiles for `variables`
+#     variables: variables plotted as increments (others keep one profile per dataset)
+#     diffs: list of 'A - B' (dataset keys, spaces around -), or
+#            {diff: 'A - B', label: ..., color: ..., linestyle: ...}
+#     base: datasets whose full profile is overlaid on the top x axis (default: [reference];
+#           [] = no overlay)
+#     a dict diff may also set `jacobian: <key>`: Jacobian used by the contribution
+#           decomposition below (default: B of 'A - B', i.e. the bg)
+#   every dataset named in jacobian_datasets/increment must be in `datasets`
+# datasets not used by any comparison are not read
+comparisons:
+#  - name: crtm_bg_an
+#    datasets: [crtm_bg, crtm_an]
+#    jacobian_datasets: [crtm_bg]
+#    increment:
+#      variables: [T, qv]
+#      diffs: ['crtm_an - crtm_bg']
+#      base: [crtm_bg]
+#  - name: rttov_bg_an
+#    datasets: [rttov_bg, rttov_an]
+#    jacobian_datasets: [rttov_bg]
+#    increment:
+#      variables: [T, qv, qc, qi]
+#      diffs: ['rttov_an - rttov_bg']
+#      base: [rttov_bg]
+  - name: rttov_2colW_crtm_JacQcQi_analysis_inc
+    datasets: [rttov_bg, rttov_an, rttov_2colW_bg, rttov_2colW_an, crtm_JacQcQi_bg, crtm_JacQcQi_an, crtm_moreloops_bg, crtm_moreloops_an, crtm_bg, crtm_an]
+    reference: rttov_bg
+    # same color/linestyle as the corresponding increment diffs below
+    jacobian_datasets:
+      - {dataset: rttov_bg,        color: tab:red,  linestyle: '-'}
+      - {dataset: rttov_2colW_bg,  color: tab:red,  linestyle: '--'}
+      - {dataset: crtm_bg,         color: tab:blue, linestyle: '-'}
+      - {dataset: crtm_JacQcQi_bg, color: tab:blue, linestyle: '--'}
+    increment:
+      variables: [T, qv, qc, qi, qr, qg, qs]
+      diffs:
+        - {diff: 'rttov_an - rttov_bg', color: tab:red,  linestyle: '-'}
+        - {diff: 'rttov_2colW_an - rttov_2colW_bg', color: tab:red,  linestyle: '--'}
+        - {diff: 'crtm_an - crtm_bg', color: tab:blue,  linestyle: '-'}
+        - {diff: 'crtm_JacQcQi_an - crtm_JacQcQi_bg',   color: tab:blue, linestyle: '--'}
+      base: [crtm_bg]
+
+# short names: T, qv, qc, qi, qr, qs, qg
+#   q* are plotted in g/kg and their Jacobians in K/(g/kg) for both operators;
+#   CRTM layer mass content (kg/m^2) is converted to mixing ratio with dp/g
+variables: [T, qv, qc, qi, qr, qg, qs]
+channels: [8, 9, 10, 13]
+
+# only use locations with EffectiveQC == 0 in every dataset of the comparison
+qc: true
+
+# profile selections; every selection is plotted for every comparison
+#   index      : obsout Location index (0-based); a list gives one selection per index
+#   region     : mean over lat/lon box
+#   cloud_proxy: mean over locations whose proxy (channel, default 13) is in the ranges;
+#                range [min, max], null = unbounded; optional lat/lon box as well
+selections:
+#  - name: loc100
+#    mode: index
+#    index: 100
+#  - name: box_sg
+#    mode: region
+#    lat: [0.0, 3.0]
+#    lon: [102.0, 105.0]
+  - name: cloudy_within_box
+    mode: cloud_proxy
+    channel: 13
+    model_range: [10.0, null]
+    obs_range: [10.0, null]
+    lat: [4.0, 8.0]
+    lon: [102.0, 109.0]
+#  - name: cloudy_both
+#    mode: cloud_proxy
+#    channel: 13
+#    model_range: [10.0, null]
+#    obs_range: [10.0, null]
+#  - name: clear_model_cloudy_obs
+#    mode: cloud_proxy
+#    model_range: [null, 1.0]
+#    obs_range: [10.0, null]
+#    lat: [-5.0, 10.0]
+#    lon: [95.0, 110.0]
+
+plot:
+  # vertical coordinate: auto = GeoVaLs air_pressure if present, else the mean of
+  # adjacent air_pressure_levels; or force air_pressure | mid_levels
+  vertical: auto
+  pressure_range: [1000.0, 100.0]   # hPa, [bottom, top]
+  ylog: false
+  show_spread: false                # shade +-1 std for averaged selections
+  # per-variable x ranges, e.g. {qv: [0, 20], T: [180, 310]}; missing/null = auto
+  xlim: {}                          # left panel, profile mode (one line per dataset)
+  increment_xlim: {}                # left panel, increment (bottom) axis, e.g. {qv: [-1, 1]}
+  symmetric_increment: true         # auto increment range centred on 0
+  base_xlim: {}                     # left panel, overlaid full profile (top) axis
+  jacobian_xlim: {}                 # right panel
+  # style of the overlaid full profiles (color default: the dataset's color)
+  base_style: {linestyle: ':', linewidth: 1.2, alpha: 0.8}
+  # legends of the profile and Jacobian panels
+  #   location: outside (below each panel; the image grows, panels keep their size) | inside
+  #   offset: distance below the bottom of the panel, in points (outside only)
+  legend: {location: outside, fontsize: 7, ncol: 1, offset: 30}
+  figsize: [10.0, 7.5]
+  dpi: 150
+
+# linearized decomposition of the obs-space increment, for every increment diff 'A - B'
+# of a comparison:  ΔBT ≈ Σ_var Σ_k J_k (x_A − x_B)_k,  J from B (bg) unless diff.jacobian
+#   <sel>/<inst>_contribution.<fmt>               bars per channel: each variable, Σ linear,
+#                                                 actual ΔBT = H(x_A) − H(x_B), O − B
+#   <sel>/<inst>_ch<N>_contribution_profile.<fmt> per-layer J_k Δx_k vs pressure (profile: true)
+#   the table is also printed. Residual (actual − Σ linear) = nonlinearity + terms not
+#   listed (surface/skin T, emissivity, O3, hydrometeors not in `variables`)
+contribution:
+  enabled: true                     # only for comparisons with increment.diffs
+  variables: null                   # null = top-level variables; e.g. [T, qv, qc, qi, qr, qs, qg]
+                                    # (unavailable in a dataset, e.g. qr for RTTOV IR -> n/a)
+  profile: true
+  profile_xlim: {}                  # per variable, e.g. {qc: [-0.5, 0.5]}
+
+map:
+  enabled: true
+  channel: 13
+  cmap: jet_r
+  vmin: null                        # null = 1st/99th percentile of both panels
+  vmax: null
+  marker_size: 6
+  qc_only: false                    # true: only plot QC-passed locations
+  use_cartopy: auto                 # auto | true | false
+  extent: null                      # [lonmin, lonmax, latmin, latmax]; null = data range
+
+# sanity check that geoval/ydiags shards line up with obsout, per dataset
+alignment_check:
+  channel: 8
+  # fraction of locations with |model BT - clear-sky BT| < 0.01 K (clear model columns)
+  min_clear_fraction: 0.01
+  strict: false                     # true: stop on failure; false: warn only
+
+output:
+  dir: './figures/{cycle}'
+  format: png
