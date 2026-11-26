@@ -91,12 +91,25 @@ plot:
   count_ylim: [0, 7]       # right axis range (log10 number)
   min_count: 10            # no statistics in bins with fewer samples
   # ylim: [-25, 30]        # left axis; may be a {channel: [lo, hi]} dict
-  # Optional piecewise-linear error model (black line, Okamoto Eq. 4 / UFO
-  # ObsErrorModelRamp): err0 for x <= x0, err1 for x >= x1, linear in between
+  # Piecewise-linear error model (black line, Okamoto Eq. 4 / UFO ObsErrorModelRamp):
+  #   err0 for x <= x0, err1 for x >= x1, linear in between
+  # mode: manual -> the 4 values per channel under `channels` (same for every experiment)
+  #       auto   -> fitted to the binned statistic of each panel (see `fit`)
+  #       both   -> manual solid, auto dashed
+  # The fitted values are printed, written at the top of the .txt table (also as
+  # ObsErrorModelRamp lists), and shown in each panel (show_fit_values).
   error_model:
-    enabled: false
-    label: error model
-    channels:
+    enabled: true
+    mode: auto
+    label: error model (yaml)
+    show_fit_values: true
+    fit:
+      # filter: QC             # default: filter of the last curve
+      stat: std                # statistic to fit (std | rms | mean)
+      weight: sqrt             # per-bin weight: sqrt(N) | count (N) | equal
+      min_count: 100           # ignore bins with fewer samples
+      # x_max: 40              # ignore bins above this x
+    channels:                  # manual values (mode: manual | both)
       8:  {x0: 0.5, x1: 17.0, err0: 3.00, err1: 13.4}
       9:  {x0: 0.5, x1: 22.5, err0: 3.50, err1: 16.8}
       10: {x0: 0.5, x1: 27.5, err0: 3.10, err1: 20.0}

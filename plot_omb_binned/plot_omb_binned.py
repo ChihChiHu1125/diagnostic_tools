@@ -13,7 +13,12 @@ memory use does not grow with the number of cycles.
 
 Output (<tag> = BC|noBC_<first cycle>-<last cycle>_<lead>hr):
   <prefix>_OmB-vs-<xvar>_<tag>.<fmt>   rows = experiments, columns = channels
-  <prefix>_OmB-vs-<xvar>_<tag>.txt     the binned numbers behind the figure
+  <prefix>_OmB-vs-<xvar>_<tag>.txt     the binned numbers behind the figure (and the
+                                       fitted error model, if any)
+
+Black line (plot.error_model): piecewise-linear error model (Okamoto 2017 Eq. 4, UFO
+ObsErrorModelRamp) from the 4 values in the yaml (mode: manual), fitted to the
+binned O-B SD of each panel (mode: auto, see fit_ramp), or both.
 
 Extending:
   * a new x variable / filter variable -> add a function with @register_var
@@ -344,7 +349,67 @@ def ramp(x, spec):
     return np.interp(x, [x0, x1], [e0, e1])
 
 
-def plot(results, exps, channels, cfg, filters, ncyc):
+def fit_ramp(xc, y, n, fcfg):
+    """Rough automatic fit of the ramp to binned statistic y (e.g. O-B SD) at bin
+    centres xc with counts n. For every pair x0 < x1 of bin centres the model
+    y = err0 (1 - w) + err1 w,  w = clip((x - x0) / (x1 - x0), 0, 1)
+    is linear in (err0, err1), so they come from weighted least squares; the pair
+    with the smallest weighted squared error wins.
+      weight: sqrt (default) | count | equal   (per-bin weight)
+      min_count: bins with fewer samples are ignored
+      x_max: ignore bins above this x (optional)
+    Returns {x0, x1, err0, err1, rmse} or None."""
+    ok = np.isfinite(y) & (n >= max(int(fcfg.get("min_count", 100)), 1))
+    if fcfg.get("x_max") is not None:
+        ok &= xc <= float(fcfg["x_max"])
+    if ok.sum() < 4:
+        return None
+    x, y, n = xc[ok], y[ok], n[ok]
+    w = {"count": n, "equal": np.ones_like(n)}.get(fcfg.get("weight", "sqrt"), np.sqrt(n))
+    best = None
+    for i in range(x.size - 1):
+        for j in range(i + 1, x.size):
+            t = np.clip((x - x[i]) / (x[j] - x[i]), 0.0, 1.0)
+            A = np.stack([1.0 - t, t], axis=1) * np.sqrt(w)[:, None]
+            b = y * np.sqrt(w)
+            coef, *_ = np.linalg.lstsq(A, b, rcond=None)
+            r = A @ coef - b
+            sse = float(r @ r)
+            if best is None or sse < best[0]:
+                best = (sse, x[i], x[j], coef[0], coef[1])
+    sse, x0, x1, e0, e1 = best
+    return {"x0": float(x0), "x1": float(x1), "err0": float(e0), "err1": float(e1),
+            "rmse": float(np.sqrt(sse / w.sum()))}
+
+
+def error_models(results, exps, channels, cfg):
+    """{(label, ch): {"manual": spec|None, "auto": spec|None}} following
+    plot.error_model.mode = manual | auto | both"""
+    em = (cfg.get("plot", {}) or {}).get("error_model") or {}
+    mode = str(em.get("mode", "manual")).lower() if em.get("enabled") else "off"
+    fcfg = em.get("fit", {}) or {}
+    filters = cfg.get("filters") or {}
+    curves = (cfg.get("plot", {}) or {}).get("curves") or [{"filter": f} for f in filters]
+    ffilter = fcfg.get("filter", curves[-1]["filter"] if curves else "all")
+    fstat = fcfg.get("stat", "std")
+    out = {}
+    for exp in exps:
+        acc, edges = results[exp["label"]]
+        for ch in channels:
+            e = edges[ch]
+            xc = 0.5 * (e[:-1] + e[1:])
+            man = per_channel(em.get("channels"), ch) if mode in ("manual", "both") else None
+            auto = None
+            if mode in ("auto", "both"):
+                a = acc[ch][ffilter]
+                auto = fit_ramp(xc, stat_values(a, fstat, 1), a["n"], fcfg)
+                if auto:
+                    auto.update(filter=ffilter, stat=fstat)
+            out[(exp["label"], ch)] = {"manual": man, "auto": auto}
+    return out
+
+
+def plot(results, exps, channels, cfg, filters, ncyc, models):
     pcfg = cfg.get("plot", {}) or {}
     xvar = cfg["x"]["var"]
     xlabel = cfg["x"].get("label", VARS[xvar][1])
@@ -398,10 +463,23 @@ def plot(results, exps, channels, cfg, filters, ncyc):
                                       lw=cv.get("linewidth", lws[k % 4]),
                                       ls=cv.get("linestyle", "-"))
                     handles.setdefault(f"{st.get('label', name)}: {fl}", line)
-            spec = per_channel(em.get("channels") if em.get("enabled") else None, ch)
-            if spec:
-                (line,) = ax.plot(xc, ramp(xc, spec), color="k", lw=1.5)
-                handles.setdefault(em.get("label", "error model"), line)
+            mods = models[(exp["label"], ch)]
+            xx = np.linspace(e[0], e[-1], 400)
+            if mods["manual"]:
+                (line,) = ax.plot(xx, ramp(xx, mods["manual"]), color="k", lw=1.6)
+                handles.setdefault(em.get("label", "error model (yaml)"), line)
+            a = mods["auto"]
+            if a:
+                (line,) = ax.plot(xx, ramp(xx, a), color="k", lw=1.6,
+                                  ls="-" if not mods["manual"] else (0, (5, 2)))
+                handles.setdefault(f"piecewise-linear fit to {a['stat']} "
+                                   f"({filters[a['filter']].get('label', a['filter'])})", line)
+                if em.get("show_fit_values", True):
+                    ax.text(0.03, 0.97, f"fit: x0={a['x0']:.1f} x1={a['x1']:.1f}\n"
+                            f"err0={a['err0']:.2f} err1={a['err1']:.2f}",
+                            transform=ax.transAxes, va="top", ha="left", fontsize=7,
+                            zorder=6, bbox=dict(boxstyle="round", fc="white", ec="0.7",
+                                                alpha=0.85))
             ax.axhline(0.0, color="0.5", lw=0.6, zorder=0)
             ax.set_xlim(e[0], e[-1])
             if ylim:
@@ -428,11 +506,36 @@ def plot(results, exps, channels, cfg, filters, ncyc):
     return fig
 
 
-def write_table(path, results, exps, channels, cfg, filters):
+def fit_summary(models, exps, channels):
+    """yaml-ready text of the automatic fits (same keys as plot.error_model.channels
+    and UFO ObsErrorModelRamp x0/x1/err0/err1)"""
+    lines = []
+    for exp in exps:
+        fits = [(ch, models[(exp["label"], ch)]["auto"]) for ch in channels]
+        fits = [(ch, a) for ch, a in fits if a]
+        if not fits:
+            continue
+        a0 = fits[0][1]
+        lines.append(f"# {exp['label']}: piecewise-linear fit to O-B {a0['stat']} "
+                     f"({a0['filter']})")
+        for ch, a in fits:
+            lines.append(f"#   {ch:>3d}: {{x0: {a['x0']:.2f}, x1: {a['x1']:.2f}, "
+                         f"err0: {a['err0']:.2f}, err1: {a['err1']:.2f}}}"
+                         f"   # weighted rmse {a['rmse']:.2f}")
+        lines.append(f"#   ObsErrorModelRamp, channels {[ch for ch, _ in fits]}:")
+        for k in ("x0", "x1", "err0", "err1"):
+            lines.append(f"#     {k}: [{', '.join(f'{a[k]:.2f}' for _, a in fits)}]")
+    return "\n".join(lines)
+
+
+def write_table(path, results, exps, channels, cfg, filters, models):
     stat_names = list(STATS)
     xvar = cfg["x"]["var"]
     with open(path, "w") as f:
         f.write(f"# O-B statistics binned by {xvar}; {bias_text(cfg)[0]}\n")
+        fs = fit_summary(models, exps, channels)
+        if fs:
+            f.write(fs + "\n")
         for fn, fs in filters.items():
             f.write(f"# filter {fn}: {fs.get('label', fn)}  conditions={fs.get('conditions')}\n")
         f.write(f"{'experiment':<16s}{'ch':>4s} {'filter':<12s}{'x_lo':>8s}{'x_hi':>8s}"
@@ -481,13 +584,17 @@ def main():
     os.makedirs(odir, exist_ok=True)
     base = os.path.join(odir, f"{ocfg.get('prefix', 'ahi')}_OmB-vs-{cfg['x']['var']}_{btag}_"
                               f"{cycles[0]}-{cycles[-1]}_{cfg.get('lead', 0)}hr")
-    fig = plot(results, exps, channels, cfg, filters, ncyc)
+    models = error_models(results, exps, channels, cfg)
+    fs = fit_summary(models, exps, channels)
+    if fs:
+        print(fs)
+    fig = plot(results, exps, channels, cfg, filters, ncyc, models)
     out = f"{base}.{ocfg.get('format', 'png')}"
     fig.savefig(out, dpi=int(ocfg.get("dpi", 150)))
     plt.close(fig)
     print(f"saved {out}")
     if ocfg.get("table", True):
-        write_table(f"{base}.txt", results, exps, channels, cfg, filters)
+        write_table(f"{base}.txt", results, exps, channels, cfg, filters, models)
         print(f"saved {base}.txt")
 
 
