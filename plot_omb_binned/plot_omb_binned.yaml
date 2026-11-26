@@ -1,0 +1,114 @@
+# plot_omb_binned.yaml — config for plot_omb_binned.py
+# O-B statistics as a function of a binned x variable, after Okamoto (2017, QJRMS
+# 143:1517, Fig. 5).
+# Usage:  python plot_omb_binned.py plot_omb_binned.yaml
+
+# ---------------------------------------------------------------------------
+# Data location (same as plot_omb_dist.yaml)
+#   Placeholders in path_template: {root} {experiment} {cycle}=YYYYMMDDHH {lead}
+#   and any key under `templates`
+# ---------------------------------------------------------------------------
+root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+path_template: "{root}/{experiment}/Verification/fc/mean/{cycle}/{lead}hr/dbOut/obsout_hofx_ahi-cld_himawari9.h5"
+lead: 0
+
+experiments:               # rows of the figure
+  - name: hucc_hofx_forecast_H-crtm
+    label: CRTM
+  - name: hucc_hofx_forecast_H-rttov
+    label: RTTOV
+
+cycles:
+  start: 2024091613
+  end: 2024091712
+  interval_hours: 1
+# cycles: [2024091700, 2024091706, 2024091712]
+
+skip_missing: true
+
+channels: [8, 9, 10, 13]   # columns of the figure
+
+# ---------------------------------------------------------------------------
+# Bias correction of the model BT (written in the title and as BC / noBC in the
+# file names). Variables about clouds (CA, Bclr - O, Bclr - B) never use it.
+# ---------------------------------------------------------------------------
+bias_correction: true
+bias:
+  group: ObsBias
+  hofx_includes_bias: true   # true: hofx = H(x) + ObsBias (JEDI default)
+clear_sky_group: ClearSkyHofX
+
+# ---------------------------------------------------------------------------
+# x axis
+#   var: CA          symmetric cloud impact (|B-Bclr| + |O-Bclr|)/2   (default, as in the paper)
+#        cloud_obs   Bclr - O        cloud_model   Bclr - B
+#        obs  hofx  omb
+#   (new variables: add a @register_var function in plot_omb_binned.py)
+#   range / bin_width: one value for all channels or a {channel: value} dict
+# ---------------------------------------------------------------------------
+x:
+  var: CA
+  bin_width: 1.0           # K
+  range: [0, 60]           # K; e.g. {8: [0, 30], 9: [0, 30], 10: [0, 30], 13: [0, 60]}
+  # label: "CA (K)"        # optional axis label
+
+# ---------------------------------------------------------------------------
+# Sample filters: name -> label + list of conditions (all must hold).
+#   {type: qc, value: 0}                         EffectiveQC == value (value may be a list)
+#   {type: range, var: obs, min: 230, max: 330}  min <= var <= max (any x variable;
+#                                                either bound optional)
+#   (new filter types: add a @register_filter function in plot_omb_binned.py)
+# ---------------------------------------------------------------------------
+filters:
+  all:
+    label: all valid obs
+    conditions: []
+  QC:
+    label: EffectiveQC==0
+    conditions:
+      - {type: qc, value: 0}
+  # Example, Okamoto (2017) low-BT QC on top of QC:
+  # QC_lowBT:
+  #   label: QC + O >= 230 K
+  #   conditions:
+  #     - {type: qc, value: 0}
+  #     - {type: range, var: obs, min: 230}
+
+# ---------------------------------------------------------------------------
+# Plot
+# ---------------------------------------------------------------------------
+plot:
+  # statistics of O-B drawn as lines: std | mean | rms
+  # (new statistics: add a @register_stat function)
+  stats:
+    - {name: std,  label: SD,   color: tab:red}
+    - {name: mean, label: Mean, color: tab:blue}
+  # one set of lines per filter; thin = first, thick = second (as in Okamoto Fig. 5)
+  curves:
+    - {filter: all, linewidth: 1.0, bar_color: "0.85"}
+    - {filter: QC,  linewidth: 2.5, bar_color: "0.6"}
+  count_bars: true         # grey bars: log10(number) per bin and filter, right axis
+  count_ylim: [0, 7]       # right axis range (log10 number)
+  min_count: 10            # no statistics in bins with fewer samples
+  # ylim: [-25, 30]        # left axis; may be a {channel: [lo, hi]} dict
+  # Optional piecewise-linear error model (black line, Okamoto Eq. 4 / UFO
+  # ObsErrorModelRamp): err0 for x <= x0, err1 for x >= x1, linear in between
+  error_model:
+    enabled: false
+    label: error model
+    channels:
+      8:  {x0: 0.5, x1: 17.0, err0: 3.00, err1: 13.4}
+      9:  {x0: 0.5, x1: 22.5, err0: 3.50, err1: 16.8}
+      10: {x0: 0.5, x1: 27.5, err0: 3.10, err1: 20.0}
+      13: {x0: 0.5, x1: 36.0, err0: 2.56, err1: 40.5}
+  # figsize: [16.2, 8.4]   # default: 3.9 per channel x 3.4 per experiment
+
+# ---------------------------------------------------------------------------
+# Output: <prefix>_OmB-vs-<x.var>_<BC|noBC>_<cycles>_<lead>hr.<format> (+ .txt table)
+# ---------------------------------------------------------------------------
+output:
+  dir: ./figs
+  prefix: ahi_himawari9_rttov_crtm
+  format: png
+  dpi: 150
+  table: true              # also write the binned N / mean / std / rms as text
