@@ -36,7 +36,7 @@ qc_value: 0          # keep only EffectiveQC == qc_value
 # (written in the figure titles and as BC / noBC in the output file names).
 #   true  -> bias-corrected model BT;  false -> model BT without bias correction
 # The cloud impact CA is always computed without bias correction.
-bias_correction: true
+bias_correction: false
 bias:
   group: ObsBias             # bias group in obsout
   hofx_includes_bias: true   # true: hofx = H(x) + ObsBias (JEDI default) -> raw = hofx - ObsBias

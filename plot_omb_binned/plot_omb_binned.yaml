@@ -13,9 +13,7 @@ path_template: "{root}/{experiment}/Verification/fc/mean/{cycle}/{lead}hr/dbOut/
 lead: 0
 
 experiments:               # rows of the figure
-  - name: hucc_hofx_forecast_H-crtm
-    label: CRTM
-  - name: hucc_hofx_forecast_H-rttov
+  - name: hucc_hofx_forecast_H-rttov-baranQiQs_for_baseline
     label: RTTOV
 
 cycles:
@@ -100,7 +98,7 @@ plot:
   # ObsErrorModelRamp lists), and shown in each panel (show_fit_values).
   error_model:
     enabled: true
-    mode: auto
+    mode: both
     label: error model (yaml)
     show_fit_values: true
     fit:
@@ -121,7 +119,7 @@ plot:
 # ---------------------------------------------------------------------------
 output:
   dir: ./figs
-  prefix: ahi_himawari9_rttov_crtm
+  prefix: ahi_himawari9_rttov_baseline
   format: png
   dpi: 150
   table: true              # also write the binned N / mean / std / rms as text
