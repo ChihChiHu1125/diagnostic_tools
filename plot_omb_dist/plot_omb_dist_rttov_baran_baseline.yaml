@@ -1,0 +1,134 @@
+# plot_omb_dist.yaml — config for plot_omb_dist.py
+# Usage:  python plot_omb_dist.py plot_omb_dist.yaml
+
+# ---------------------------------------------------------------------------
+# Data location
+#   Placeholders available in path_template:
+#     {root}  {experiment}  {cycle}=YYYYMMDDHH  {lead}  and any key under `templates`
+# ---------------------------------------------------------------------------
+root: /scratch/users/industry/nea/hucc/regional_mpasjedi
+path_template: "{root}/{experiment}/Verification/fc/mean/{cycle}/{lead}hr/dbOut/obsout_hofx_ahi-cld_himawari9.h5"
+lead: 0
+
+# One or more experiments; with several, histograms are overlaid for comparison.
+experiments:
+  - name: hucc_hofx_forecast_H-rttov-baranQiQs_for_baseline
+    label: RTTOV
+
+# Cycles: either {start, end, interval_hours} or an explicit list of YYYYMMDDHH
+cycles:
+  start: 2024091613
+  end: 2024091712
+  interval_hours: 1
+# cycles: [2024091700, 2024091706, 2024091712]
+
+skip_missing: true   # false -> stop with an error if a file is missing
+
+# ---------------------------------------------------------------------------
+# Selection
+# ---------------------------------------------------------------------------
+channels: [8, 9, 10, 13]
+qc_value: 0          # keep only EffectiveQC == qc_value
+
+# Bias correction of the model BT, used by EVERY figure and the stats file
+# (written in the figure titles and as BC / noBC in the output file names).
+#   true  -> bias-corrected model BT;  false -> model BT without bias correction
+# The cloud impact CA is always computed without bias correction.
+bias_correction: false
+bias:
+  group: ObsBias             # bias group in obsout
+  hofx_includes_bias: true   # true: hofx = H(x) + ObsBias (JEDI default) -> raw = hofx - ObsBias
+                             # false: hofx is raw H(x) -> bias-corrected = hofx + ObsBias
+clear_sky_group: ClearSkyHofX   # clear-sky BT (Bclr) for CA
+
+# ---------------------------------------------------------------------------
+# Plot settings
+# ---------------------------------------------------------------------------
+#   hist_range    : range used to build the bins (also the range for clipping)
+#   xlim          : x-axis range shown on the plot (default = hist_range)
+#   clip_to_edges : true  -> values outside hist_range are piled into the edge bins
+#                   false -> values outside hist_range are left out of the histogram
+#   (mean/std/rms in the panels always use ALL QC-passed data, regardless of these)
+plot:
+  omb:
+    hist_range: [-60.0, 60.0]   # K
+    xlim: [-10.0, 10.0]         # K
+    bin_width: 0.25
+    clip_to_edges: true
+  normalized_omb:
+    hist_range: [-6.0, 6.0]
+    xlim: [-4.0, 4.0]
+    bin_width: 0.1
+    clip_to_edges: true
+    gaussian: true              # overlay N(0,1) reference
+  style: line              # line -> curve through bin centers; hist -> bar histogram
+  density: true            # true -> PDF; false -> counts
+  log_y: true
+  stats_loc: lower center  # stats box inside panel: lower left | lower center | lower right
+  ncols: 2                 # panel layout (channels per row)
+  figsize: [11, 8]
+  # Density scatter plot after Okamoto (2017, QJRMS 143:1517, Fig. 2): model BT (x) vs
+  # observed BT (y), coloured by log10(number per bin) in discrete steps.
+  # Rows = experiments, columns = channels; same QC selection as the histograms.
+  scatter:
+    enabled: true
+    channels: [8, 9, 10, 13]   # independent of the top-level `channels`
+    bin_width: 0.5             # K, density bin size on both axes (Okamoto: 1.0)
+    range: null                # null -> auto (0.1-99.9 percentile, per channel)
+                               # [200, 300] -> same for every channel (as in Okamoto)
+                               # {8: [200, 260], 13: [180, 310]} -> per channel
+    omb_lines: [0, 10, -10, 30, -30]   # dashed lines O-B = value (K)
+    normalize: false           # false -> number per bin; true -> fraction of points in the panel
+    cmap: okamoto              # okamoto (discrete jet-like) or any matplotlib name, e.g. jet, turbo
+    level_step: 0.25           # colour step in log10 units (0.25 -> 4 colours per decade)
+    show_stats: true           # N, O-B mean/SD, R in the lower-right corner
+    # vmin: 1                  # optional colour-scale limits (rounded out to whole decades)
+    # vmax: 1.0e4
+    # figsize: [15, 7.6]       # default: 3.6 per channel x 3.4 per experiment
+  # Boxplots in the style of Okamoto (2017, QJRMS 143:1517, Fig. 11), one row per channel:
+  #   left: observed BT + model BT of each experiment; right: O-B of each experiment.
+  #   box = Q1-Q3, whiskers = whis x IQR, dots = outliers, line = median, x = mean
+  boxplot:
+    enabled: true
+    channels: [8, 9, 10, 13]
+    apply_qc: true             # false -> all valid obs before QC (as in Okamoto Fig. 11)
+    obs: auto                  # auto -> one OB box if every experiment has identical obs,
+                               #         otherwise one OB box per experiment
+                               # shared | per_experiment -> force either
+    whis: 1.5
+    show_outliers: true
+    show_stats: true           # mean / SD under each box label
+    # bt_ylim: [180, 310]      # optional y ranges
+    # omb_ylim: [-100, 100]
+    # figsize: [12, 16]
+  # Density plot of the symmetric cloud impact CA (x) and O-B (y) after Okamoto
+  # (2017, QJRMS 143:1517, Fig. 4; Fig. 3 = before QC with bust_lines: true).
+  #   CA = (|B - Bclr| + |O - Bclr|) / 2, B and Bclr without bias correction
+  #   colour = log10(number per bin), same discrete colours as the scatter plot
+  cloud_impact:
+    enabled: true
+    channels: [8, 9, 10, 13]
+    apply_qc: true             # false -> all valid obs before QC (Okamoto Fig. 3)
+    bin_width: 1.0             # K, on both axes
+    ca_range: [0, 70]          # K, x axis
+    omb_range: [-50, 50]       # K, y axis
+    bust_lines: false          # true -> long dashed |O-B| = bust_factor * CA for CA > bust_ca_min
+    bust_factor: 1.8
+    bust_ca_min: 3.0
+    normalize: false
+    cmap: okamoto
+    level_step: 0.25
+    show_stats: true           # N, O-B mean/SD, CA mean in the lower-right corner
+    # vmin: 1
+    # vmax: 1.0e4
+    # figsize: [14.8, 7.5]
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+output:
+  dir: ./figs
+  prefix: ahi_himawari9_rttov_baseline
+  format: png
+  dpi: 150
+  stats_file: true         # also write a text summary of per-channel statistics
