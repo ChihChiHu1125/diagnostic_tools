@@ -32,6 +32,17 @@ skip_missing: true   # false -> stop with an error if a file is missing
 channels: [8, 9, 10, 13]
 qc_value: 0          # keep only EffectiveQC == qc_value
 
+# Bias correction of the model BT, used by EVERY figure and the stats file
+# (written in the figure titles and as BC / noBC in the output file names).
+#   true  -> bias-corrected model BT;  false -> model BT without bias correction
+# The cloud impact CA is always computed without bias correction.
+bias_correction: true
+bias:
+  group: ObsBias             # bias group in obsout
+  hofx_includes_bias: true   # true: hofx = H(x) + ObsBias (JEDI default) -> raw = hofx - ObsBias
+                             # false: hofx is raw H(x) -> bias-corrected = hofx + ObsBias
+clear_sky_group: ClearSkyHofX   # clear-sky BT (Bclr) for CA
+
 # ---------------------------------------------------------------------------
 # Plot settings
 # ---------------------------------------------------------------------------
@@ -92,6 +103,27 @@ plot:
     # bt_ylim: [180, 310]      # optional y ranges
     # omb_ylim: [-100, 100]
     # figsize: [12, 16]
+  # Density plot of the symmetric cloud impact CA (x) and O-B (y) after Okamoto
+  # (2017, QJRMS 143:1517, Fig. 4; Fig. 3 = before QC with bust_lines: true).
+  #   CA = (|B - Bclr| + |O - Bclr|) / 2, B and Bclr without bias correction
+  #   colour = log10(number per bin), same discrete colours as the scatter plot
+  cloud_impact:
+    enabled: true
+    channels: [8, 9, 10, 13]
+    apply_qc: true             # false -> all valid obs before QC (Okamoto Fig. 3)
+    bin_width: 1.0             # K, on both axes
+    ca_range: [0, 70]          # K, x axis
+    omb_range: [-50, 50]       # K, y axis
+    bust_lines: false          # true -> long dashed |O-B| = bust_factor * CA for CA > bust_ca_min
+    bust_factor: 1.8
+    bust_ca_min: 3.0
+    normalize: false
+    cmap: okamoto
+    level_step: 0.25
+    show_stats: true           # N, O-B mean/SD, CA mean in the lower-right corner
+    # vmin: 1
+    # vmax: 1.0e4
+    # figsize: [14.8, 7.5]
 
 # ---------------------------------------------------------------------------
 # Output

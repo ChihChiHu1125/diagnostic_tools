@@ -2,11 +2,17 @@
 """
 Multi-cycle OmB / normalized-OmB distribution for Himawari AHI channels.
 
-  OmB            = ObsValue/brightnessTemperature - hofx/brightnessTemperature
+  OmB            = ObsValue - model BT   (all variables: <group>/brightnessTemperature)
+  model BT       = bias_correction: true  -> bias-corrected H(x)
+                   bias_correction: false -> H(x) without bias correction
+                   (bias.hofx_includes_bias: true  -> hofx is H(x) + ObsBias, the JEDI
+                    default, so raw H(x) = hofx - ObsBias)
   normalized OmB = OmB / EffectiveError/brightnessTemperature
   selection      : EffectiveQC/brightnessTemperature == qc_value (default 0)
+  CA             = (|B - Bclr| + |O - Bclr|) / 2, symmetric cloud impact (Okamoto et al.
+                   2014), B = H(x) and Bclr = ClearSkyHofX, both WITHOUT bias correction
 
-Figures:
+Figures (<tag> = BC|noBC_<first cycle>-<last cycle>_<lead>hr):
   <prefix>_OmB_<tag>        OmB histogram, one panel per channel
   <prefix>_NormOmB_<tag>    normalized OmB histogram, one panel per channel
   <prefix>_scatter_<tag>    (plot.scatter.enabled) model BT (x) vs observed BT (y),
@@ -15,6 +21,9 @@ Figures:
   <prefix>_boxplot_<tag>    (plot.boxplot.enabled) Okamoto (2017, QJRMS, Fig. 11)-style
                             boxplots of observed / model BT and of O-B; one row per
                             channel; optionally before QC (plot.boxplot.apply_qc: false)
+  <prefix>_CA-OmB_<tag>     (plot.cloud_impact.enabled) Okamoto (2017, Figs 3-4)-style
+                            density plot of CA (x) and O-B (y), coloured by log10(count);
+                            rows = experiments, columns = plot.cloud_impact.channels
 
 Usage:
   python plot_omb_dist.py plot_omb_dist.yaml
@@ -68,16 +77,67 @@ def normalize_experiments(cfg):
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
-def read_file(path, channels, qc_value):
-    """Return {ch: (obs, hofx, err, qc_pass)} for every point with valid obs and hofx
-    in one file (before QC). qc_pass = EffectiveQC == qc_value and a valid
-    EffectiveError > 0."""
+def _ok(a):
+    return np.isfinite(a) & (np.abs(a) < FILL_THRESH)
+
+
+def bias_settings(cfg):
+    """(bias_correction, bias group, hofx_includes_bias) from the yaml."""
+    bcfg = cfg.get("bias", {}) or {}
+    return (bool(cfg.get("bias_correction", True)),
+            bcfg.get("group", "ObsBias"),
+            bool(bcfg.get("hofx_includes_bias", True)))
+
+
+def bias_text(cfg):
+    """Short text for titles/stats, and the tag used in output file names."""
+    bc, group, incl = bias_settings(cfg)
+    if bc:
+        how = "hofx" if incl else f"hofx + {group}"
+        return f"model BT bias-corrected ({how})", "BC"
+    how = f"hofx − {group}" if incl else "hofx"
+    return f"model BT NOT bias-corrected ({how})", "noBC"
+
+
+def read_file(path, channels, qc_value, cfg, need_ca=False):
+    """Return {ch: {RAW_KEYS: array}} for every point with valid obs and model BT in
+    one file (before QC). qc_pass = EffectiveQC == qc_value and a valid
+    EffectiveError > 0.
+
+    Model BT ("hofx") is bias-corrected or not following `bias_correction`;
+    `bias.hofx_includes_bias` says whether the hofx group already contains the bias
+    (JEDI default: hofx = H(x) + ObsBias).
+
+    need_ca -> also the symmetric cloud impact (Okamoto et al. 2014, 2017 Eq. 1)
+        CA = (|B - Bclr| + |O - Bclr|) / 2
+    always WITHOUT bias correction: B = H(x) without bias, Bclr = clear-sky H(x)
+    (`clear_sky_group`, default ClearSkyHofX). CA = NaN where Bclr is missing."""
+    bc, bgroup, incl = bias_settings(cfg)
+    clr_group = cfg.get("clear_sky_group", "ClearSkyHofX")
     with h5py.File(path, "r") as f:
         chan_list = np.asarray(f["Channel"][:]).astype(int)
         obs = np.asarray(f["ObsValue/" + GROUP_VAR][:], dtype=np.float64)
         hofx = np.asarray(f["hofx/" + GROUP_VAR][:], dtype=np.float64)
         err = np.asarray(f["EffectiveError/" + GROUP_VAR][:], dtype=np.float64)
         qc = np.asarray(f["EffectiveQC/" + GROUP_VAR][:])
+        bkey = f"{bgroup}/{GROUP_VAR}"
+        if bkey in f:
+            bias = np.asarray(f[bkey][:], dtype=np.float64)
+        else:
+            bias = None
+            if bc and not incl:
+                raise KeyError(f"bias_correction: true needs {bkey} in {path} "
+                               f"(or set bias_correction: false)")
+            if (bc or incl) and not getattr(read_file, "_warned", False):
+                print(f"WARNING: no {bkey} in {path}: taking hofx as it is "
+                      f"(bias = 0) for both bias-corrected and raw model BT")
+                read_file._warned = True
+        clr = None
+        if need_ca:
+            ckey = f"{clr_group}/{GROUP_VAR}"
+            if ckey not in f:
+                raise KeyError(f"{ckey} (clear-sky BT for CA) not in {path}")
+            clr = np.asarray(f[ckey][:], dtype=np.float64)
 
     out = {}
     for ch in channels:
@@ -86,11 +146,23 @@ def read_file(path, channels, qc_value):
             raise KeyError(f"channel {ch} not in file {path} (has {chan_list.tolist()})")
         i = idx[0]
         o, h, e, q = obs[:, i], hofx[:, i], err[:, i], qc[:, i]
-        valid = (np.isfinite(o) & np.isfinite(h)
-                 & (np.abs(o) < FILL_THRESH) & (np.abs(h) < FILL_THRESH))
-        e_ok = np.isfinite(e) & (np.abs(e) < FILL_THRESH) & (e > 0.0)
-        qc_pass = (q == qc_value) & e_ok
-        out[ch] = (o[valid], h[valid], e[valid], qc_pass[valid])
+        if bias is None:
+            b = np.zeros_like(h)
+        else:
+            b = np.where(_ok(bias[:, i]), bias[:, i], np.nan)
+        h_raw = h - b if incl else h            # H(x) without bias correction
+        h_bc = h if incl else h + b             # bias-corrected H(x)
+        hm = h_bc if bc else h_raw
+        valid = _ok(o) & _ok(h) & np.isfinite(hm)
+        e_ok = _ok(e) & (e > 0.0)
+        d = {"obs": o[valid], "hofx": hm[valid], "err": e[valid],
+             "qc_pass": ((q == qc_value) & e_ok)[valid]}
+        if need_ca:
+            c = clr[:, i]
+            c = np.where(_ok(c), c, np.nan)
+            ca = 0.5 * (np.abs(h_raw - c) + np.abs(o - c))
+            d["ca"] = ca[valid]
+        out[ch] = d
     return out
 
 
@@ -98,21 +170,24 @@ RAW_KEYS = ("obs", "hofx", "err", "qc_pass")
 
 
 def qc_view(raw):
-    """{ch: raw arrays} -> {ch: {omb, nomb, obs, hofx}} for QC-passed points only."""
+    """{ch: raw arrays} -> {ch: {omb, nomb, obs, hofx[, ca]}} for QC-passed points only."""
     out = {}
     for ch, d in raw.items():
         ok = d["qc_pass"]
         o, h = d["obs"][ok], d["hofx"][ok]
         omb = o - h
         out[ch] = {"omb": omb, "nomb": omb / d["err"][ok], "obs": o, "hofx": h}
+        if "ca" in d:
+            out[ch]["ca"] = d["ca"][ok]
     return out
 
 
-def collect(cfg, exp, cycles, channels):
+def collect(cfg, exp, cycles, channels, need_ca=False):
     """Read all cycles of one experiment; returns ({ch: {RAW_KEYS: array}}, used cycles)
     with every valid point (QC not applied yet, see qc_view)."""
     templates = dict(cfg.get("templates", {}) or {})
-    data = {ch: {k: [] for k in RAW_KEYS} for ch in channels}
+    keys = RAW_KEYS + (("ca",) if need_ca else ())
+    data = {ch: {k: [] for k in keys} for ch in channels}
     used, missing = [], []
     for cyc in cycles:
         path = cfg["path_template"].format(
@@ -123,13 +198,13 @@ def collect(cfg, exp, cycles, channels):
                 missing.append(cyc)
                 continue
             raise FileNotFoundError(path)
-        res = read_file(path, channels, int(cfg.get("qc_value", 0)))
-        for ch, arrays in res.items():
-            for k, a in zip(RAW_KEYS, arrays):
-                data[ch][k].append(a)
+        res = read_file(path, channels, int(cfg.get("qc_value", 0)), cfg, need_ca)
+        for ch, d in res.items():
+            for k in keys:
+                data[ch][k].append(d[k])
         used.append(cyc)
     for ch in channels:
-        for k in RAW_KEYS:
+        for k in keys:
             data[ch][k] = (np.concatenate(data[ch][k]) if data[ch][k]
                            else np.empty(0, dtype=bool if k == "qc_pass" else np.float64))
     print(f"[{exp['label']}] cycles used: {len(used)}, missing: {len(missing)}")
@@ -222,7 +297,7 @@ def plot_kind(kind, all_data, exps, channels, cfg, ncycles):
     sub = (f"histogram range [{lo}, {hi}]"
            + (", outside values clipped into edge bins" if clip else ", outside values dropped"))
     fig.suptitle(f"AHI Himawari-9 {title}  (EffectiveQC=={qc}, {ncycles} cycles, "
-                 f"lead {cfg.get('lead', 0)}h)\n{sub}", fontsize=11)
+                 f"lead {cfg.get('lead', 0)}h)\n{bias_text(cfg)[0]};  {sub}", fontsize=11)
     fig.tight_layout()
     return fig
 
@@ -259,6 +334,120 @@ def scatter_cmap(name):
     return plt.get_cmap(name)
 
 
+def density_norm(scfg, vmax, vmin_pos, normalize, cmap, step):
+    """Discrete log10 colour levels, whole decades at both ends (0..4 in Okamoto).
+    vmax / vmin_pos: largest / smallest non-empty bin over all panels."""
+    vmin = scfg.get("vmin", vmin_pos if normalize else 1.0)
+    vmax = scfg.get("vmax", vmax)
+    if not np.isfinite(vmin) or vmax <= 0:
+        vmin, vmax = 1.0, 10.0
+    llo, lhi = np.floor(np.log10(vmin)), np.ceil(np.log10(vmax))
+    if lhi <= llo:
+        lhi = llo + 1.0
+    levels = np.arange(llo, lhi + 0.5 * step, step)
+    return llo, lhi, BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+
+
+def _density_colorbar(fig, mesh, axes, ncols, llo, lhi, normalize):
+    cb = fig.colorbar(mesh, ax=axes, orientation="horizontal",
+                      shrink=min(0.6, 0.25 * ncols + 0.1), aspect=35, pad=0.02,
+                      ticks=np.arange(llo, lhi + 0.5, 1.0))
+    cb.set_label("log10(fraction of points per bin)" if normalize
+                 else "log10(number per bin)")
+    cb.ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%g"))
+    return cb
+
+
+def plot_cloud_impact(data, exps, cfg, ncycles):
+    """Density plot of the symmetric cloud impact CA (x) and O-B (y) after Okamoto
+    (2017, QJRMS 143:1517, Figs 3-4); colour = log10(number per bin).
+    CA = (|B - Bclr| + |O - Bclr|) / 2 is computed without bias correction; O-B
+    follows `bias_correction`. Rows = experiments, columns = channels.
+    `data` is {label: {ch: {obs, hofx, ca}}}, QC-selected or not (apply_qc)."""
+    pcfg = cfg.get("plot", {}) or {}
+    ccfg = pcfg.get("cloud_impact", {}) or {}
+    channels = [int(c) for c in ccfg.get("channels", [8, 9, 10, 13])]
+    apply_qc = bool(ccfg.get("apply_qc", True))
+    bw = float(ccfg.get("bin_width", 1.0))
+    xlo, xhi = [float(v) for v in ccfg.get("ca_range", [0.0, 70.0])]
+    ylo, yhi = [float(v) for v in ccfg.get("omb_range", [-50.0, 50.0])]
+    normalize = bool(ccfg.get("normalize", False))
+    cmap = scatter_cmap(ccfg.get("cmap", "okamoto"))
+    step = float(ccfg.get("level_step", 0.25))
+    bust = bool(ccfg.get("bust_lines", False))
+    bfac = float(ccfg.get("bust_factor", 1.8))
+    bca = float(ccfg.get("bust_ca_min", 3.0))
+    show_stats = bool(ccfg.get("show_stats", True))
+    nrows, ncols = len(exps), len(channels)
+    figsize = ccfg.get("figsize", [3.6 * ncols + 0.4, 3.0 * nrows + 1.5])
+
+    xe = np.arange(xlo, xhi + 0.5 * bw, bw)
+    ye = np.arange(ylo, yhi + 0.5 * bw, bw)
+    panels, vmax, vmin_pos = {}, 0.0, np.inf
+    for exp in exps:
+        for ch in channels:
+            d = data[exp["label"]][ch]
+            ok = np.isfinite(d["ca"])
+            ca, omb = d["ca"][ok], (d["obs"] - d["hofx"])[ok]
+            H, _, _ = np.histogram2d(ca, omb, bins=[xe, ye])
+            if normalize and ca.size:
+                H = H / ca.size
+            H[H == 0] = np.nan
+            if np.isfinite(H).any():
+                vmax = max(vmax, np.nanmax(H))
+                vmin_pos = min(vmin_pos, np.nanmin(H))
+            panels[(exp["label"], ch)] = (H, ca, omb, int((~ok).sum()))
+    llo, lhi, norm = density_norm(ccfg, vmax, vmin_pos, normalize, cmap, step)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False,
+                             constrained_layout=True)
+    mesh = None
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    for ie, exp in enumerate(exps):
+        for ic, ch in enumerate(channels):
+            ax = axes[ie][ic]
+            H, ca, omb, nmiss = panels[(exp["label"], ch)]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                logH = np.log10(H)
+            mesh = ax.pcolormesh(xe, ye, logH.T, cmap=cmap, norm=norm, rasterized=True)
+            ax.axhline(0.0, ls=(0, (4, 3)), color="0.35", lw=0.7, zorder=3)
+            if bust:                               # |O-B| = bfac * CA for CA > bca
+                xx = np.array([bca, xhi])
+                for s in (1, -1):
+                    ax.plot(xx, s * bfac * xx, ls=(0, (8, 4)), color="0.2", lw=0.9,
+                            zorder=3)
+            ax.set_xlim(xlo, xhi)
+            ax.set_ylim(ylo, yhi)
+            if show_stats:
+                if ca.size:
+                    txt = (f"N={ca.size:,}\nO-B mean={np.mean(omb):.2f}\n"
+                           f"O-B SD={np.std(omb):.2f}\nCA mean={np.mean(ca):.2f}")
+                else:
+                    txt = "N=0"
+                if nmiss:
+                    txt += f"\n(no Bclr: {nmiss:,})"
+                ax.text(0.97, 0.03, txt, transform=ax.transAxes, va="bottom", ha="right",
+                        fontsize=7, zorder=4,
+                        bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.8))
+            k = ie * ncols + ic
+            ax.set_title(f"({letters[k % 26]})  {exp['label']}  Band{ch}",
+                         loc="left", fontsize=10)
+            ax.set_xlabel("CA (K)" if ie == nrows - 1 else "")
+            ax.set_ylabel("O−B (K)" if ic == 0 else "")
+            ax.tick_params(direction="out")
+
+    qc = (f"EffectiveQC=={cfg.get('qc_value', 0)}" if apply_qc
+          else "before QC (all valid obs)")
+    extra = (f";  long dashed: |O−B| = {bfac:g} CA for CA > {bca:g} K" if bust else "")
+    fig.suptitle(f"AHI Himawari-9 symmetric cloud impact CA vs O−B  ({qc}, {ncycles} "
+                 f"cycles, lead {cfg.get('lead', 0)}h)\n"
+                 f"O−B: {bias_text(cfg)[0]};  CA = (|B−Bclr|+|O−Bclr|)/2 without bias "
+                 f"correction\ncolour: log10 number in {bw:g} K bins{extra}",
+                 fontsize=10.5)
+    _density_colorbar(fig, mesh, axes, ncols, llo, lhi, normalize)
+    return fig
+
+
 def plot_scatter(all_data, exps, cfg, ncycles):
     """Density scatter plot after Okamoto (2017, QJRMS, Fig. 2): model BT (x) vs
     observed BT (y) as a 2-D histogram, coloured by log10(count per bin) in discrete
@@ -293,16 +482,7 @@ def plot_scatter(all_data, exps, cfg, ncycles):
                 vmax = max(vmax, np.nanmax(H))
                 vmin_pos = min(vmin_pos, np.nanmin(H))
             panels[(exp["label"], ch)] = (H, edges, h, o)
-    vmin = scfg.get("vmin", vmin_pos if normalize else 1.0)
-    vmax = scfg.get("vmax", vmax)
-    if not np.isfinite(vmin) or vmax <= 0:
-        vmin, vmax = 1.0, 10.0
-    # discrete levels in log10 space, whole decades at both ends (0..4 in Okamoto)
-    llo, lhi = np.floor(np.log10(vmin)), np.ceil(np.log10(vmax))
-    if lhi <= llo:
-        lhi = llo + 1.0
-    levels = np.arange(llo, lhi + 0.5 * step, step)
-    norm = BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+    llo, lhi, norm = density_norm(scfg, vmax, vmin_pos, normalize, cmap, step)
 
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False,
                              constrained_layout=True)
@@ -345,14 +525,9 @@ def plot_scatter(all_data, exps, cfg, ncycles):
     lines = ", ".join(f"{d:+g}" if d else "0" for d in omb_lines)
     fig.suptitle(f"AHI Himawari-9 density scatter of model and observed BT  "
                  f"(EffectiveQC=={qc}, {ncycles} cycles, lead {cfg.get('lead', 0)}h)\n"
-                 f"colour: log10 number in {bw:g} K bins;  dashed: O−B = {lines} K",
-                 fontsize=10.5)
-    cb = fig.colorbar(mesh, ax=axes, orientation="horizontal",
-                      shrink=min(0.6, 0.25 * ncols + 0.1), aspect=35, pad=0.02,
-                      ticks=np.arange(llo, lhi + 0.5, 1.0))
-    cb.set_label("log10(fraction of points per bin)" if normalize
-                 else "log10(number per bin)")
-    cb.ax.xaxis.set_major_formatter(plt.FormatStrFormatter("%g"))
+                 f"{bias_text(cfg)[0]};  colour: log10 number in {bw:g} K bins;  "
+                 f"dashed: O−B = {lines} K", fontsize=10.5)
+    _density_colorbar(fig, mesh, axes, ncols, llo, lhi, normalize)
     return fig
 
 
@@ -455,7 +630,7 @@ def plot_boxplot(data, exps, cfg, ncycles):
     qc = (f"EffectiveQC=={cfg.get('qc_value', 0)}" if apply_qc
           else "before QC (all valid obs)")
     fig.suptitle(f"AHI Himawari-9 BT and O−B distributions  ({qc}, {ncycles} cycles, "
-                 f"lead {cfg.get('lead', 0)}h)\n"
+                 f"lead {cfg.get('lead', 0)}h)\n{bias_text(cfg)[0]}\n"
                  f"box: Q1–Q3, whiskers: {float(bcfg.get('whis', 1.5)):g}×IQR, "
                  f"line: median, ×: mean", fontsize=11)
     return fig
@@ -472,24 +647,31 @@ def main():
     pcfg = cfg.get("plot", {}) or {}
     scfg = pcfg.get("scatter", {}) or {}
     bcfg = pcfg.get("boxplot", {}) or {}
+    ccfg = pcfg.get("cloud_impact", {}) or {}
     do_scatter = bool(scfg.get("enabled", False))
     do_box = bool(bcfg.get("enabled", False))
-    box_raw = do_box and not bool(bcfg.get("apply_qc", True))  # boxplot needs pre-QC data
+    do_ca = bool(ccfg.get("enabled", False))
+    # boxplot / cloud-impact plot may need pre-QC data
+    box_raw = do_box and not bool(bcfg.get("apply_qc", True))
+    ca_raw = do_ca and not bool(ccfg.get("apply_qc", True))
     read_channels = list(channels)
-    for on, sub in ((do_scatter, scfg), (do_box, bcfg)):
+    for on, sub in ((do_scatter, scfg), (do_box, bcfg), (do_ca, ccfg)):
         if on:
             read_channels += [int(c) for c in sub.get("channels", [8, 9, 10, 13])
                               if int(c) not in read_channels]
     cycles = build_cycles(cfg["cycles"])
     exps = normalize_experiments(cfg)
+    btxt, btag = bias_text(cfg)
     print(f"cycles requested: {len(cycles)} ({cycles[0]} -> {cycles[-1]})")
+    print(btxt)
 
     all_data, raw_data, ncyc = {}, {}, 0
     for exp in exps:
-        raw, used = collect(cfg, exp, cycles, read_channels)
+        raw, used = collect(cfg, exp, cycles, read_channels, need_ca=do_ca)
         all_data[exp["label"]] = qc_view(raw)
-        if box_raw:
-            raw_data[exp["label"]] = {ch: {"obs": d["obs"], "hofx": d["hofx"]}
+        if box_raw or ca_raw:
+            keep = ("obs", "hofx") + (("ca",) if ca_raw else ())
+            raw_data[exp["label"]] = {ch: {k: d[k] for k in keep}
                                       for ch, d in raw.items()}
         del raw
         ncyc = max(ncyc, len(used))
@@ -500,7 +682,8 @@ def main():
     prefix = ocfg.get("prefix", "ahi")
     fmt = ocfg.get("format", "png")
     dpi = int(ocfg.get("dpi", 150))
-    tag = f"{cycles[0]}-{cycles[-1]}_{cfg.get('lead', 0)}hr"
+    # BC / noBC in every file name
+    tag = f"{btag}_{cycles[0]}-{cycles[-1]}_{cfg.get('lead', 0)}hr"
 
     for kind, name in (("omb", "OmB"), ("nomb", "NormOmB")):
         fig = plot_kind(kind, all_data, exps, channels, cfg, ncyc)
@@ -523,11 +706,18 @@ def main():
         plt.close(fig)
         print(f"saved {out}")
 
+    if do_ca:
+        fig = plot_cloud_impact(raw_data if ca_raw else all_data, exps, cfg, ncyc)
+        out = os.path.join(odir, f"{prefix}_CA-OmB_{tag}.{fmt}")
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        print(f"saved {out}")
+
     if ocfg.get("stats_file", True):
         out = os.path.join(odir, f"{prefix}_stats_{tag}.txt")
         with open(out, "w") as f:
             f.write(f"# cycles {cycles[0]} -> {cycles[-1]}, lead {cfg.get('lead', 0)}h, "
-                    f"EffectiveQC=={cfg.get('qc_value', 0)}\n")
+                    f"EffectiveQC=={cfg.get('qc_value', 0)}\n# {btxt}\n")
             f.write(f"{'experiment':<20s}{'ch':>4s}{'kind':>8s}{'N':>12s}"
                     f"{'mean':>10s}{'std':>10s}{'rms':>10s}\n")
             for exp in exps:
