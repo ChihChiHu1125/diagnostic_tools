@@ -36,6 +36,14 @@ bias:
   hofx_includes_bias: true   # true: hofx = H(x) + ObsBias (JEDI default)
 clear_sky_group: ClearSkyHofX
 
+# Clear-sky BT (Bclr) used by CA = (|B - Bclr| + |O - Bclr|)/2 and by cloud_obs / cloud_model
+#   method: clear_sky_hofx -> Bclr = <clear_sky_group>/brightnessTemperature from the file
+#           fixed          -> Bclr = fixed_bclr[channel] (K) for every location;
+#                             written in the title, "-fixedBclr" in the file names
+ca:
+  method: clear_sky_hofx
+  fixed_bclr: {8: 234.0, 9: 246.0, 10: 258.8, 13: 292.0}   # default = SymmCldImpact btlim
+
 # ---------------------------------------------------------------------------
 # x axis
 #   var: CA          symmetric cloud impact (|B-Bclr| + |O-Bclr|)/2   (default, as in the paper)
