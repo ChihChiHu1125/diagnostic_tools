@@ -41,7 +41,7 @@ clear_sky_group: ClearSkyHofX
 #           fixed          -> Bclr = fixed_bclr[channel] (K) for every location;
 #                             written in the title, "-fixedBclr" in the file names
 ca:
-  method: clear_sky_hofx
+  method: fixed
   fixed_bclr: {8: 234.0, 9: 246.0, 10: 258.8, 13: 292.0}   # default = SymmCldImpact btlim
 
 # ---------------------------------------------------------------------------
