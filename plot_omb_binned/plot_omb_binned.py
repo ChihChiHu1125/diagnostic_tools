@@ -5,6 +5,8 @@ Okamoto et al. (2017, QJRMS 143:1517, Fig. 5): one curve per statistic and per s
 filter on the left axis, and the log10 number of samples per bin as grey bars on the
 right axis. Default x variable: symmetric cloud impact
     CA = (|B - Bclr| + |O - Bclr|) / 2           (Okamoto et al. 2014)
+with Bclr either the clear-sky H(x) in the file (ca.method: clear_sky_hofx) or a fixed
+value per channel (ca.method: fixed -> file names get "-fixedBclr").
 
 Inputs: IODA obsout files (ObsValue, hofx, EffectiveQC, EffectiveError, ObsBias,
 ClearSkyHofX groups of brightnessTemperature), many cycles, one or more experiments.
@@ -218,6 +220,30 @@ def bias_text(cfg):
     return f"model BT NOT bias-corrected ({'hofx − ' + group if incl else 'hofx'})", "noBC"
 
 
+DEFAULT_FIXED_BCLR = {8: 234.0, 9: 246.0, 10: 258.8, 13: 292.0}   # K (btlim of SymmCldImpact)
+
+
+def clr_settings(cfg):
+    """(method, {ch: Bclr}) for the clear-sky BT used by CA and other cloud variables:
+    clear_sky_hofx -> Bclr = <clear_sky_group>/brightnessTemperature from the file
+    fixed          -> Bclr = one fixed value per channel (ca.fixed_bclr)"""
+    c = cfg.get("ca", {}) or {}
+    method = str(c.get("method", "clear_sky_hofx")).lower()
+    if method not in ("clear_sky_hofx", "fixed"):
+        raise ValueError(f"ca.method must be clear_sky_hofx or fixed, not {method}")
+    fixed = c.get("fixed_bclr") or DEFAULT_FIXED_BCLR
+    return method, {int(k): float(v) for k, v in fixed.items()}
+
+
+def clr_text(cfg, channels):
+    """(title text, file-name suffix) describing Bclr"""
+    method, fixed = clr_settings(cfg)
+    if method == "fixed":
+        vals = ", ".join(f"ch{ch} {fixed[ch]:g}" for ch in channels if ch in fixed)
+        return f"Bclr fixed ({vals} K)", "-fixedBclr"
+    return f"Bclr = {cfg.get('clear_sky_group', 'ClearSkyHofX')}", ""
+
+
 def per_channel(value, ch, default=None):
     """value may be one setting for all channels or a {channel: setting} dict"""
     if isinstance(value, dict):
@@ -259,7 +285,8 @@ def read_file(path, channels, cfg, need):
                 print(f"WARNING: no {bkey} in {path}: bias taken as 0")
                 read_file._warned = True
         clr = None
-        if "clr" in need:
+        method, fixed = clr_settings(cfg)
+        if "clr" in need and method == "clear_sky_hofx":
             ckey = f"{cfg.get('clear_sky_group', 'ClearSkyHofX')}/{GROUP_VAR}"
             if ckey not in f:
                 raise KeyError(f"{ckey} (clear-sky BT) not in {path}")
@@ -282,6 +309,8 @@ def read_file(path, channels, cfg, need):
         if clr is not None:
             c = clr[:, i]
             d["clr"] = np.where(_ok(c), c, np.nan)[v]
+        elif "clr" in need:                       # ca.method: fixed
+            d["clr"] = np.full(int(v.sum()), fixed[ch])
         out[ch] = d
     return out
 
@@ -500,9 +529,11 @@ def plot(results, exps, channels, cfg, filters, ncyc, models):
         fig.legend(list(handles.values()), list(handles.keys()), loc="lower center",
                    bbox_to_anchor=(0.5, -0.06), **leg)
     bw = per_channel(cfg["x"].get("bin_width"), channels[0], 1.0)
+    ctxt = (f"\n{xvar}: {clr_text(cfg, channels)[0]}, no bias correction"
+            if "clr" in needed_inputs(cfg) else "")
     fig.suptitle(f"AHI Himawari-9 O−B statistics vs {xvar}  ({ncyc} cycles, lead "
                  f"{cfg.get('lead', 0)}h)\n{bias_text(cfg)[0]};  {xvar} bins {bw:g} K;  "
-                 f"stats shown where N ≥ {min_count}", fontsize=10.5)
+                 f"stats shown where N ≥ {min_count}{ctxt}", fontsize=10.5)
     return fig
 
 
@@ -533,6 +564,8 @@ def write_table(path, results, exps, channels, cfg, filters, models):
     xvar = cfg["x"]["var"]
     with open(path, "w") as f:
         f.write(f"# O-B statistics binned by {xvar}; {bias_text(cfg)[0]}\n")
+        if "clr" in needed_inputs(cfg):
+            f.write(f"# {clr_text(cfg, channels)[0]}\n")
         fs = fit_summary(models, exps, channels)
         if fs:
             f.write(fs + "\n")
@@ -568,10 +601,18 @@ def main():
         if cv["filter"] not in filters:
             raise KeyError(f"curve filter '{cv['filter']}' not defined under filters")
     need = needed_inputs(cfg)
+    method, fixed = clr_settings(cfg)
+    ctxt, ctag = clr_text(cfg, channels) if "clr" in need else ("", "")
+    if "clr" in need and method == "fixed":
+        miss = [ch for ch in channels if ch not in fixed]
+        if miss:
+            raise KeyError(f"ca.fixed_bclr has no value for channel(s) {miss}")
     cycles = build_cycles(cfg["cycles"])
     exps = normalize_experiments(cfg)
     btxt, btag = bias_text(cfg)
     print(f"cycles requested: {len(cycles)} ({cycles[0]} -> {cycles[-1]})\n{btxt}")
+    if ctxt:
+        print(ctxt)
 
     results, ncyc = {}, 0
     for exp in exps:
@@ -582,7 +623,7 @@ def main():
     ocfg = cfg.get("output", {}) or {}
     odir = ocfg.get("dir", "./figs")
     os.makedirs(odir, exist_ok=True)
-    base = os.path.join(odir, f"{ocfg.get('prefix', 'ahi')}_OmB-vs-{cfg['x']['var']}_{btag}_"
+    base = os.path.join(odir, f"{ocfg.get('prefix', 'ahi')}_OmB-vs-{cfg['x']['var']}{ctag}_{btag}_"
                               f"{cycles[0]}-{cycles[-1]}_{cfg.get('lead', 0)}hr")
     models = error_models(results, exps, channels, cfg)
     fs = fit_summary(models, exps, channels)

@@ -10,7 +10,8 @@ Multi-cycle OmB / normalized-OmB distribution for Himawari AHI channels.
   normalized OmB = OmB / EffectiveError/brightnessTemperature
   selection      : EffectiveQC/brightnessTemperature == qc_value (default 0)
   CA             = (|B - Bclr| + |O - Bclr|) / 2, symmetric cloud impact (Okamoto et al.
-                   2014), B = H(x) and Bclr = ClearSkyHofX, both WITHOUT bias correction
+                   2014), B = H(x) and Bclr = ClearSkyHofX, both WITHOUT bias correction,
+                   or Bclr = fixed value per channel (ca.method: fixed)
 
 Figures (<tag> = BC|noBC_<first cycle>-<last cycle>_<lead>hr):
   <prefix>_OmB_<tag>        OmB histogram, one panel per channel
@@ -99,6 +100,30 @@ def bias_text(cfg):
     return f"model BT NOT bias-corrected ({how})", "noBC"
 
 
+DEFAULT_FIXED_BCLR = {8: 234.0, 9: 246.0, 10: 258.8, 13: 292.0}   # K (btlim of SymmCldImpact)
+
+
+def clr_settings(cfg):
+    """(method, {ch: Bclr}) for the clear-sky BT in CA:
+    clear_sky_hofx -> Bclr = <clear_sky_group>/brightnessTemperature from the file
+    fixed          -> Bclr = one fixed value per channel (ca.fixed_bclr)"""
+    c = cfg.get("ca", {}) or {}
+    method = str(c.get("method", "clear_sky_hofx")).lower()
+    if method not in ("clear_sky_hofx", "fixed"):
+        raise ValueError(f"ca.method must be clear_sky_hofx or fixed, not {method}")
+    fixed = c.get("fixed_bclr") or DEFAULT_FIXED_BCLR
+    return method, {int(k): float(v) for k, v in fixed.items()}
+
+
+def clr_text(cfg, channels):
+    """(title text, file-name suffix) describing Bclr"""
+    method, fixed = clr_settings(cfg)
+    if method == "fixed":
+        vals = ", ".join(f"ch{ch} {fixed[ch]:g}" for ch in channels if ch in fixed)
+        return f"Bclr fixed ({vals} K)", "-fixedBclr"
+    return f"Bclr = {cfg.get('clear_sky_group', 'ClearSkyHofX')}", ""
+
+
 def read_file(path, channels, qc_value, cfg, need_ca=False):
     """Return {ch: {RAW_KEYS: array}} for every point with valid obs and model BT in
     one file (before QC). qc_pass = EffectiveQC == qc_value and a valid
@@ -111,9 +136,11 @@ def read_file(path, channels, qc_value, cfg, need_ca=False):
     need_ca -> also the symmetric cloud impact (Okamoto et al. 2014, 2017 Eq. 1)
         CA = (|B - Bclr| + |O - Bclr|) / 2
     always WITHOUT bias correction: B = H(x) without bias, Bclr = clear-sky H(x)
-    (`clear_sky_group`, default ClearSkyHofX). CA = NaN where Bclr is missing."""
+    (`clear_sky_group`, default ClearSkyHofX; ca.method: clear_sky_hofx) or a fixed
+    value per channel (ca.method: fixed). CA = NaN where Bclr is missing."""
     bc, bgroup, incl = bias_settings(cfg)
     clr_group = cfg.get("clear_sky_group", "ClearSkyHofX")
+    clr_method, clr_fixed = clr_settings(cfg)
     with h5py.File(path, "r") as f:
         chan_list = np.asarray(f["Channel"][:]).astype(int)
         obs = np.asarray(f["ObsValue/" + GROUP_VAR][:], dtype=np.float64)
@@ -133,7 +160,7 @@ def read_file(path, channels, qc_value, cfg, need_ca=False):
                       f"(bias = 0) for both bias-corrected and raw model BT")
                 read_file._warned = True
         clr = None
-        if need_ca:
+        if need_ca and clr_method == "clear_sky_hofx":
             ckey = f"{clr_group}/{GROUP_VAR}"
             if ckey not in f:
                 raise KeyError(f"{ckey} (clear-sky BT for CA) not in {path}")
@@ -158,8 +185,11 @@ def read_file(path, channels, qc_value, cfg, need_ca=False):
         d = {"obs": o[valid], "hofx": hm[valid], "err": e[valid],
              "qc_pass": ((q == qc_value) & e_ok)[valid]}
         if need_ca:
-            c = clr[:, i]
-            c = np.where(_ok(c), c, np.nan)
+            if clr is None:                         # ca.method: fixed
+                c = np.full_like(o, clr_fixed[ch])
+            else:
+                c = clr[:, i]
+                c = np.where(_ok(c), c, np.nan)
             ca = 0.5 * (np.abs(h_raw - c) + np.abs(o - c))
             d["ca"] = ca[valid]
         out[ch] = d
@@ -442,7 +472,7 @@ def plot_cloud_impact(data, exps, cfg, ncycles):
     fig.suptitle(f"AHI Himawari-9 symmetric cloud impact CA vs O−B  ({qc}, {ncycles} "
                  f"cycles, lead {cfg.get('lead', 0)}h)\n"
                  f"O−B: {bias_text(cfg)[0]};  CA = (|B−Bclr|+|O−Bclr|)/2 without bias "
-                 f"correction\ncolour: log10 number in {bw:g} K bins{extra}",
+                 f"correction, {clr_text(cfg, channels)[0]}\ncolour: log10 number in {bw:g} K bins{extra}",
                  fontsize=10.5)
     _density_colorbar(fig, mesh, axes, ncols, llo, lhi, normalize)
     return fig
@@ -664,6 +694,13 @@ def main():
     btxt, btag = bias_text(cfg)
     print(f"cycles requested: {len(cycles)} ({cycles[0]} -> {cycles[-1]})")
     print(btxt)
+    if do_ca:
+        method, fixed = clr_settings(cfg)
+        ca_ch = [int(c) for c in ccfg.get("channels", [8, 9, 10, 13])]
+        miss = [ch for ch in ca_ch if ch not in fixed]
+        if method == "fixed" and miss:
+            raise KeyError(f"ca.fixed_bclr has no value for channel(s) {miss}")
+        print("CA: " + clr_text(cfg, ca_ch)[0])
 
     all_data, raw_data, ncyc = {}, {}, 0
     for exp in exps:
@@ -708,7 +745,8 @@ def main():
 
     if do_ca:
         fig = plot_cloud_impact(raw_data if ca_raw else all_data, exps, cfg, ncyc)
-        out = os.path.join(odir, f"{prefix}_CA-OmB_{tag}.{fmt}")
+        ctag = clr_text(cfg, ccfg.get("channels", [8, 9, 10, 13]))[1]
+        out = os.path.join(odir, f"{prefix}_CA{ctag}-OmB_{tag}.{fmt}")
         fig.savefig(out, dpi=dpi)
         plt.close(fig)
         print(f"saved {out}")
